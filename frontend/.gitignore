@@ -1,0 +1,45 @@
+# --- DEPENDENCIES ---
+node_modules/
+.pnp
+.pnp.js
+
+# --- NEXT.JS BUILD FILES ---
+.next/
+out/
+build/
+
+# --- ENVIRONMENT VARIABLES (🚨 CRITICAL) ---
+.env
+.env*.local
+.env.local
+.env.development
+.env.production
+.env.test
+
+# --- LOGS ---
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# --- OS GENERATED FILES ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# --- FIREBASE & DEPLOYMENT ---
+.firebase/
+.vercel/
+
+# --- IDE & EDITOR FILES ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

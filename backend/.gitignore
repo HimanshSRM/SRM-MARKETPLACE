@@ -1,0 +1,44 @@
+# --- VIRTUAL ENVIRONMENTS (🚨 CRITICAL) ---
+venv/
+env/
+.venv/
+env.bak/
+venv.bak/
+
+# --- SECRETS & CREDENTIALS (🚨 CRITICAL) ---
+.env
+serviceAccountKey.json
+*.pem
+*secret*.json
+
+# --- BYTE-COMPILED / OPTIMIZED FILES ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- LOGS & DATABASES ---
+*.log
+*.sqlite3
+*.db
+
+# --- TESTING & COVERAGE ---
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# --- OS GENERATED FILES ---
+.DS_Store
+Thumbs.db
+
+# --- IDE & EDITOR FILES ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- FASTAPI / MYPY SPECIFIC ---
+.mypy_cache/
+.ruff_cache/
+
+backend/get_token.py

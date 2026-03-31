@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+/* If you need custom theme variables in v4, you do them here now: */
+@theme {
+  --color-brand-blue: #3b82f6;
+  --color-brand-purple: #a855f7;
+}
+
+/* Your existing custom CSS below */
+
+/* We can add custom CSS here later if needed, but Tailwind handles 99% of it */
