@@ -7,7 +7,7 @@ firebase-admin==6.4.0
 
 # Data Validation & Environment Variables
 pydantic==2.10.0
-pydantic-settings==2.1.0
+pydantic-settings==2.5.2
 python-dotenv==1.0.1
 
 
