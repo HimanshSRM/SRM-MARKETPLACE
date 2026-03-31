@@ -6,9 +6,10 @@ uvicorn==0.27.1
 firebase-admin==6.4.0
 
 # Data Validation & Environment Variables
-pydantic==2.6.1
+pydantic==2.10.0
 pydantic-settings==2.1.0
 python-dotenv==1.0.1
+
 
 # Error Monitoring (Optional but recommended in your README)
 sentry-sdk
