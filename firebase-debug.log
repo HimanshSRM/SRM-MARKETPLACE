@@ -1,0 +1,57 @@
+[debug] [2026-04-01T15:44:17.895Z] ----------------------------------------------------------------------
+[debug] [2026-04-01T15:44:17.899Z] Command:       C:\Program Files\nodejs\node.exe C:\Users\Himansh\AppData\Roaming\npm\node_modules\firebase-tools\lib\bin\firebase.js init
+[debug] [2026-04-01T15:44:17.899Z] CLI Version:   15.12.0
+[debug] [2026-04-01T15:44:17.899Z] Platform:      win32
+[debug] [2026-04-01T15:44:17.900Z] Node Version:  v22.19.0
+[debug] [2026-04-01T15:44:17.900Z] Time:          Wed Apr 01 2026 21:14:17 GMT+0530 (India Standard Time)
+[debug] [2026-04-01T15:44:17.900Z] ----------------------------------------------------------------------
+[debug] 
+[info] 
+     ######## #### ########  ######## ########     ###     ######  ########
+     ##        ##  ##     ## ##       ##     ##  ##   ##  ##       ##
+     ######    ##  ########  ######   ########  #########  ######  ######
+     ##        ##  ##    ##  ##       ##     ## ##     ##       ## ##
+     ##       #### ##     ## ######## ########  ##     ##  ######  ########
+
+You're about to initialize a Firebase project in this directory:
+
+  C:\Users\Himansh\Desktop\SRM marketplace - Copy
+
+[info] 
+=== Project Setup
+[info] 
+[info] First, let's associate this project directory with a Firebase project.
+[info] You can create multiple project aliases by running firebase use --add, 
+[info] 
+[debug] [2026-04-01T15:44:27.690Z] > command requires scopes: ["email","openid","https://www.googleapis.com/auth/cloudplatformprojects.readonly","https://www.googleapis.com/auth/firebase","https://www.googleapis.com/auth/cloud-platform"]
+[debug] [2026-04-01T15:44:27.690Z] > authorizing via signed-in user (himanshyadav202@gmail.com)
+[debug] [2026-04-01T15:44:27.692Z] Checked if tokens are valid: true, expires at: 1775061845604
+[debug] [2026-04-01T15:44:27.692Z] Checked if tokens are valid: true, expires at: 1775061845604
+[debug] [2026-04-01T15:44:27.694Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects pageSize=100
+[debug] [2026-04-01T15:44:28.459Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects 200
+[debug] [2026-04-01T15:44:28.460Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects [omitted]
+[info] 
+=== Hosting Setup
+[debug] [2026-04-01T15:44:33.420Z] Checked if tokens are valid: true, expires at: 1775061845604
+[debug] [2026-04-01T15:44:33.420Z] Checked if tokens are valid: true, expires at: 1775061845604
+[debug] [2026-04-01T15:44:33.421Z] >>> [apiv2][query] GET https://firebase.googleapis.com/v1beta1/projects/srm-marketplace-c5035 [none]
+[debug] [2026-04-01T15:44:38.931Z] <<< [apiv2][status] GET https://firebase.googleapis.com/v1beta1/projects/srm-marketplace-c5035 200
+[debug] [2026-04-01T15:44:38.931Z] <<< [apiv2][body] GET https://firebase.googleapis.com/v1beta1/projects/srm-marketplace-c5035 {"projectId":"srm-marketplace-c5035","projectNumber":"639527417493","displayName":"SRM-MARKETPLACE","name":"projects/srm-marketplace-c5035","resources":{"hostingSite":"srm-marketplace-c5035"},"state":"ACTIVE","etag":"1_059c01c8-ddf9-4e1c-baa4-9e91cc773fc1"}
+[info] 
+[info] Your public directory is the folder (relative to your project directory) that
+[info] will contain Hosting assets to be uploaded with firebase deploy. If you
+[info] have a build process for your assets, use your build's output directory.
+[info] 
+[debug] [2026-04-01T15:47:52.558Z] ExitPromptError: User force closed the prompt with SIGINT
+    at Interface.sigint (C:\Users\Himansh\AppData\Roaming\npm\node_modules\firebase-tools\node_modules\@inquirer\core\dist\commonjs\lib\create-prompt.js:101:37)
+    at Interface.emit (node:events:519:28)
+    at [_ttyWrite] [as _ttyWrite] (node:internal/readline/interface:1132:18)
+    at ReadStream.onkeypress (node:internal/readline/interface:271:20)
+    at ReadStream.emit (node:events:531:35)
+    at emitKeys (node:internal/readline/utils:370:14)
+    at emitKeys.next (<anonymous>)
+    at ReadStream.onData (node:internal/readline/emitKeypressEvents:64:36)
+    at ReadStream.emit (node:events:519:28)
+    at addChunk (node:internal/streams/readable:561:12)
+[error] 
+[error] Error: An unexpected error has occurred.
