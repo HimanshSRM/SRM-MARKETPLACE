@@ -31,8 +31,8 @@ app = FastAPI(title="SRM Campus Economy API", version="1.0.0")
 
 origins = [
     settings.FRONTEND_URL.rstrip("/"),      # Trusted URL from .env
-    "http://localhost:3000",    # Standard Localhost
-    "http://127.0.0.1:3000",    # Alternative Localhost
+    "https://srm-marketplace-webapp.vercel.app",
+    # Alternative Localhost
 ]
 
 app.add_middleware(
