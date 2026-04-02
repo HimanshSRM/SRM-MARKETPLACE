@@ -42,3 +42,7 @@ Thumbs.db
 .ruff_cache/
 
 backend/get_token.py
+
+
+firebase-debug.log
+firebase-debug.*.log

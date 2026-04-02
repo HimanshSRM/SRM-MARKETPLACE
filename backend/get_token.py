@@ -1,6 +1,6 @@
 import requests
 
-FIREBASE_WEB_API_KEY = "AIzaSyDdIBo7XwWhRVnjkUTqHWjxJXNe6a_mPcs"
+FIREBASE_WEB_API_KEY = ""
 
 # Change this email whenever you want to test a different person!
 TEST_EMAIL = "2342himansh11a2@gmail.com"  
