@@ -4,7 +4,7 @@ import json
 # ==========================================
 # 1. YOUR CONFIGURATION (Fill this in!)
 # ==========================================
-FIREBASE_WEB_API_KEY = "AIzaSyDdIBo7XwWhRVnjkUTqHWjxJXNe6a_mPcs"
+FIREBASE_WEB_API_KEY = ""
 API_BASE_URL = "http://127.0.0.1:8000"
 
 # A fake SRM student we will create to test the system
