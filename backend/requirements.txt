@@ -13,3 +13,4 @@ python-dotenv==1.0.1
 
 # Error Monitoring (Optional but recommended in your README)
 sentry-sdk
+request
