@@ -5,30 +5,34 @@ import { useParams, useRouter } from 'next/navigation';
 import { getLiveShops, getShopCatalog, Shop, CatalogItem, initiateChat } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import { auth } from '@/lib/firebase';
-import ReportModal from '@/components/ReportModal'; // 🚨 ADDED MODAL IMPORT
+import ReportModal from '@/components/ReportModal'; 
 
 export default function ShopCatalogPage() {
   const params = useParams();
   const router = useRouter();
   const shopId = params.shopId as string;
-  const { profile } = useAuth();
+  
+  // 🚨 1. Grabbed the auth loading state
+  const { profile, isLoading: isAuthLoading } = useAuth();
 
   const [shop, setShop] = useState<Shop | null>(null);
   const [catalog, setCatalog] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // 🚨 ADDED REPORTING STATE
   const [reportingItem, setReportingItem] = useState<{id: string, title: string, shopId: string} | null>(null);
 
   useEffect(() => {
-    const fetchShopData = async () => {
-      if (profile === undefined) return; 
+    // 🚨 2. WAIT FOR FIREBASE FIRST before attempting to fetch anything
+    if (isAuthLoading) return;
 
+    const fetchShopData = async () => {
       try {
         setIsLoading(true);
         const token = await auth.currentUser?.getIdToken();
-        if (!token) {
+        
+        // 🚨 3. Now it's safe to check if they are logged out
+        if (!token || !profile) {
           setError("You must be logged in to view shop catalogs.");
           setIsLoading(false);
           return;
@@ -56,7 +60,7 @@ export default function ShopCatalogPage() {
     };
 
     fetchShopData();
-  }, [shopId, profile]);
+  }, [shopId, profile, isAuthLoading]); // 🚨 Added isAuthLoading to dependencies
 
   const handleMessageShop = async (item: any) => {
     if (!profile || profile.role === 'guest') {
@@ -82,14 +86,17 @@ export default function ShopCatalogPage() {
     }
   };
 
-  if (isLoading || profile === undefined) {
+  // 🚨 4. COMBINED LOADING CHECK: Spin while either Firebase OR the backend is working
+  if (isAuthLoading || isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Loading Catalog...</p>
       </div>
     );
   }
 
+  // Safe fallback if there's an error or the shop doesn't exist
   if (error || !shop) {
     return (
       <div className="min-h-screen bg-gray-50 p-8 text-center">
@@ -207,7 +214,7 @@ export default function ShopCatalogPage() {
           <ReportModal
             listingId={reportingItem.id}
             listingTitle={reportingItem.title}
-            shopId={reportingItem.shopId} // Passes the shop ID so the modal knows what to do!
+            shopId={reportingItem.shopId}
             onClose={() => setReportingItem(null)}
           />
         )}

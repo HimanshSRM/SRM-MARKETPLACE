@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from firebase_admin import auth
 
 from app.core.firebase import db
-from app.core.security import get_admin_user, get_current_user 
+from app.core.security import get_admin_user, get_current_user , get_active_user 
 
 # 🚨 IMPORTING ALL SCHEMAS FROM YOUR MODELS FILE
 from app.models.admin import RoleUpdate, RejectRequest, ReportCreate, ModerateAction, GenericWarning, UserModerationPayload
@@ -138,14 +138,32 @@ async def moderate_user(uid: str, payload: UserModerationPayload, admin: dict = 
 
         # 1. APPLY ACTION TO AUTH, PROFILE, AND LISTINGS
         if payload.action == "ban":
-            user_ref.update({"status": "banned", "banned_at": firestore.SERVER_TIMESTAMP})
+            user_ref.update({"status": "banned", "role": "banned","banned_at": firestore.SERVER_TIMESTAMP})
             
             # Cascade: Hide all their items instantly
             for doc_id, doc in all_user_listings.items():
                 batch.update(doc.reference, {"status": "suspended"})
                 
         elif payload.action == "restore":
-            user_ref.update({"status": "active", "banned_at": firestore.DELETE_FIELD})
+            # 🚨 THE FIX: Check for the verified SRM email field, NOT their primary email!
+            user_data = user_ref.get().to_dict() or {}
+            
+            # Check if they successfully verified an SRM email in the past
+            has_verified_srm_email = "srm_email" in user_data
+            
+            # Smart role assignment: Give them student if they verified, else guest
+            restored_role = "student" if has_verified_srm_email else "guest"
+            
+            # Check if they actually own a verified shop to restore that role instead
+            shop_doc = db.collection("shops").document(uid).get()
+            if shop_doc.exists and shop_doc.to_dict().get("status") == "approved":
+                restored_role = "shop_verified"
+
+            user_ref.update({
+                "status": "active", 
+                "role": restored_role, # <-- This puts them back as a student/shop!
+                "banned_at": firestore.DELETE_FIELD
+            })
             
             # Cascade: Bring their items back to life
             for doc_id, doc in all_user_listings.items():
@@ -203,7 +221,7 @@ async def moderate_user(uid: str, payload: UserModerationPayload, admin: dict = 
 # 🚩 STUDENT ACTION - REPORT LISTING
 # ==========================================
 @router.post("/listings/{listing_id}/report", tags=["Trust & Safety"])
-async def report_listing(listing_id: str, payload: ReportCreate, user: dict = Depends(get_current_user)):
+async def report_listing(listing_id: str, payload: ReportCreate, user: dict = Depends(get_active_user)):
     """Allows a user to flag a listing. Prevents duplicate reporting."""
     uid = user.get("uid")
     

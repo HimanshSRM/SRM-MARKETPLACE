@@ -8,27 +8,30 @@ import { getGuestDashboard } from '@/lib/api';
 import Link from 'next/link';
 
 export default function GuestDashboardPage() {
-  const { profile } = useAuth();
+  const { profile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
   const [dashboardData, setDashboardData] = useState<any>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    // 🚨 0. WAIT FOR FIREBASE FIRST
+    if (isAuthLoading) return;
+
     // 1. If not logged in, send to login
-    if (profile === null) {
+    if (!profile) {
       router.push('/login');
       return;
     }
 
     // 2. If they are a student, send them to their real profile
-    if (profile?.role === 'student') {
+    if (profile.role === 'student') {
       router.push('/profile');
       return;
     }
 
     // 3. If they are a verified shop, send them to the shop dashboard
-    if (profile?.role === 'shop') {
+    if (profile.role === 'shop' || profile.role === 'shop_verified') {
       router.push('/shop');
       return;
     }
@@ -48,10 +51,10 @@ export default function GuestDashboardPage() {
       }
     };
 
-    if (profile?.role === 'guest') {
+    if (profile.role === 'guest') {
       loadDashboard();
     }
-  }, [profile, router]);
+  }, [profile, router, isAuthLoading]); // 🚨 Added isAuthLoading here
 
   if (profile === undefined || isLoading) {
     return (

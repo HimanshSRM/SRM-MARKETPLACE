@@ -33,7 +33,8 @@ const CATEGORY_MAP = {
 };
 
 export default function HomePage() {
-  const { profile, withRoleCheck } = useAuth();
+  // 🚨 1. Grabbed the auth loading state
+  const { profile, withRoleCheck, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
   // 🌟 PAGINATION STATE
@@ -75,32 +76,26 @@ export default function HomePage() {
     }
   };
 
-  // 1. Initial Auth & Load
+  // 🚨 2. COMBINED & SMART USE EFFECT
+  // This single effect now safely handles the initial load AND any tab/category changes!
   useEffect(() => {
-    const unsubscribe = auth.onAuthStateChanged(async (user) => {
-      if (user) {
-        setIsLoading(true);
-        setError(null);
-        await fetchProducts('', '', true);
-        setIsLoading(false);
-      } else {
-        setIsLoading(false);
-        setProducts([]);
-        setNextCursor(null);
-      }
-    });
+    // Wait for AuthContext to figure out who the user is
+    if (isAuthLoading) return;
 
-    return () => unsubscribe();
-  }, []);
-
-  // 2. Handle Filter Changes
-  // When a user clicks a new tab or category, we MUST reset the feed and fetch from the beginning.
-  useEffect(() => {
-    if (profile && !isLoading && error !== "locked") {
-      setIsLoading(true);
-      fetchProducts('', activeCategory, true).finally(() => setIsLoading(false));
+    // If no profile, clear the feed and stop the spinner
+    if (!profile) {
+      setProducts([]);
+      setNextCursor(null);
+      setIsLoading(false);
+      return;
     }
-  }, [activeCategory, activeTab]); 
+
+    // If they are logged in, fetch the products based on the current tabs!
+    setIsLoading(true);
+    setError(null);
+    fetchProducts('', activeCategory, true).finally(() => setIsLoading(false));
+
+  }, [profile, isAuthLoading, activeCategory, activeTab]); 
 
   // 3. The "Load More" Handler
   const handleLoadMore = async () => {
@@ -145,11 +140,9 @@ export default function HomePage() {
     setActiveCategory('all'); 
   };
 
-  // 🌟 OPTIMIZATION: We no longer need to filter `products` locally because the backend is doing it!
   const displayedProducts = products.filter((p: any) => {
     const pType = p.type || 'product'; 
     const typeMatch = activeTab === 'all' || pType === activeTab;
-    // We remove the local category filter since the backend handles it via the API call
     return typeMatch;
   });
 
@@ -198,8 +191,8 @@ export default function HomePage() {
         </>
       )}
 
-      {/* RENDER LOGIC */}
-      {isLoading ? (
+      {/* 🚨 3. RENDER LOGIC: Shows skeleton loaders while Firebase OR Backend is loading! */}
+      {isAuthLoading || isLoading ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {[1, 2, 3, 4, 5, 6].map((skeleton) => (
             <div key={skeleton} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden animate-pulse">
@@ -228,7 +221,6 @@ export default function HomePage() {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {displayedProducts.map((product: any) => (
               <div key={product.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden flex flex-col">
-                {/* ... (Your existing product card design remains identical) ... */}
                 <div className="h-48 bg-gray-100 w-full relative group">
                   {product.image_url ? (
                     <img src={product.image_url} alt={product.title} className="w-full h-full object-cover" />

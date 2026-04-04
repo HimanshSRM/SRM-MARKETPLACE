@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from google.cloud import firestore
 
 from app.core.firebase import db
-from app.core.security import get_transacting_user, get_current_user # 🛡️ Upgraded to block Guests
+from app.core.security import get_transacting_user, get_current_user, get_active_user 
 from app.models.chat import (
     ChatInitiate, 
     MessageCreate, 
@@ -19,6 +19,7 @@ router = APIRouter()
 # ==========================================
 @router.post("/initiate", tags=["Chat & Bidding"])
 async def initiate_chat(data: ChatInitiate, user: dict = Depends(get_transacting_user)):
+    # 🛡️ Secure: get_transacting_user blocks Guests AND Banned users
     sender_id = user.get("uid")
     if sender_id == data.owner_id:
         raise HTTPException(status_code=400, detail="You cannot message yourself.")
@@ -83,6 +84,7 @@ async def initiate_chat(data: ChatInitiate, user: dict = Depends(get_transacting
 # ==========================================
 @router.get("/inbox", tags=["Chat & Bidding"])
 async def get_user_inbox(user: dict = Depends(get_current_user)): 
+    # 🟢 READ ACTION: Keep get_current_user so Banned users can view their inbox
     try:
         uid = user.get("uid")
         role = user.get("role", "guest")
@@ -133,10 +135,11 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
 # ==========================================
 @router.get("/{room_id}/messages", tags=["Chat & Bidding"])
 async def get_chat_history(room_id: str, user: dict = Depends(get_current_user)):
+    # 🟢 READ ACTION: Keep get_current_user so Banned users can read history
     try:
         uid = user.get("uid")
         role = user.get("role", "guest")
-        email = user.get("email", "") # 🚨 Get Email for Admin Fallback
+        email = user.get("email", "") 
         
         room_ref = db.collection("chat_rooms").document(room_id)
         room_doc = room_ref.get()
@@ -152,7 +155,6 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
         if "created_at" in room_data and room_data["created_at"]:
             room_data["created_at"] = str(room_data["created_at"])
 
-        # 🚨 THE FIX: Allow access if role is admin OR if the email matches!
         is_buyer = room_data.get("buyer_id") == uid
         is_seller = room_data.get("seller_id") == uid
         is_admin_support = room_data.get("seller_id") == "ADMIN_TEAM" and (role == "admin" or email == "himanshyadav202@gmail.com")
@@ -160,7 +162,6 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
         if not (is_buyer or is_seller or is_admin_support):
             raise HTTPException(status_code=403, detail="Access denied. You are not in this chat.")
 
-        # 🚨 Safe fetch without order_by to prevent Firebase Missing Index crashes
         messages_query = room_ref.collection("messages").stream()
         
         messages = []
@@ -172,7 +173,6 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
                 msg["created_at"] = str(msg["created_at"])
             messages.append(msg)
 
-        # Sort safely in Python
         messages.sort(key=lambda x: str(x.get("created_at") or x.get("timestamp") or ""))
 
         return {
@@ -190,11 +190,16 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
 # 4. SEND MESSAGE
 # ==========================================
 @router.post("/{room_id}/messages", tags=["Chat & Bidding"])
-async def send_message(room_id: str, req: dict, user: dict = Depends(get_current_user)):
+async def send_message(
+    room_id: str, 
+    req: dict, 
+    user: dict = Depends(get_current_user) # 🟢 RULE 1: Swapped to base user to allow custom bouncer
+):
     try:
         uid = user.get("uid")
         role = user.get("role", "guest")
-        email = user.get("email", "") # 🚨 Get Email for Admin Fallback
+        status = user.get("status", "active")
+        email = user.get("email", "")
         
         room_ref = db.collection("chat_rooms").document(room_id)
         room_doc = room_ref.get()
@@ -204,13 +209,22 @@ async def send_message(room_id: str, req: dict, user: dict = Depends(get_current
             
         room_data = room_doc.to_dict()
         
-        # 🚨 THE FIX: Allow access if role is admin OR if the email matches!
         is_buyer = room_data.get("buyer_id") == uid
         is_seller = room_data.get("seller_id") == uid
         is_admin_support = room_data.get("seller_id") == "ADMIN_TEAM" and (role == "admin" or email == "himanshyadav202@gmail.com")
         
         if not (is_buyer or is_seller or is_admin_support):
             raise HTTPException(status_code=403, detail="403: Access denied. You are not in this chat.")
+
+        # 🚨 RULE 1: CUSTOM BOUNCER FOR BANNED USERS
+        is_banned = (role == "banned" or status == "banned")
+        if is_banned:
+            if room_data.get("seller_id") != "ADMIN_TEAM":
+                raise HTTPException(status_code=403, detail="Suspended accounts can only reply in official Admin Support threads.")
+            
+            # Prevent them from re-opening a closed ticket by replying
+            if room_data.get("status") == "resolved":
+                raise HTTPException(status_code=403, detail="This support ticket has been closed by the Admin Team.")
 
         msg_ref = room_ref.collection("messages").document()
         msg_data = {
@@ -234,7 +248,6 @@ async def send_message(room_id: str, req: dict, user: dict = Depends(get_current
             tickets = db.collection("tickets").where("chat_room_id", "==", room_id).stream()
             for t in tickets:
                 update_data = {"updated_at": firestore.SERVER_TIMESTAMP}
-                # Sync Admin Response using the fallback check
                 if is_admin_support:
                     update_data["admin_response"] = msg_data["text"]
                 t.reference.update(update_data)
@@ -254,6 +267,7 @@ async def send_message(room_id: str, req: dict, user: dict = Depends(get_current
 # ==========================================
 @router.post("/{room_id}/messages/{message_id}/accept", tags=["Chat & Bidding"])
 async def accept_bid(room_id: str, message_id: str, user: dict = Depends(get_transacting_user)):
+    # 🛡️ Secure: get_transacting_user blocks Guests AND Banned users
     try:
         uid = user.get("uid")
         room_ref = db.collection("chat_rooms").document(room_id)
@@ -290,7 +304,11 @@ async def accept_bid(room_id: str, message_id: str, user: dict = Depends(get_tra
 # 6. BULK DELETE MESSAGES
 # ==========================================
 @router.post("/{room_id}/messages/bulk-delete", tags=["Chat & Bidding"])
-async def delete_messages(room_id: str, payload: BulkDeletePayload, user: dict = Depends(get_current_user)):
+async def delete_messages(
+    room_id: str, 
+    payload: BulkDeletePayload, 
+    user: dict = Depends(get_active_user) # 🔴 BOUNCER APPLIED
+):
     """Allows a user to delete multiple messages at once. Secures against deleting other people's messages."""
     uid = user.get("uid")
     role = user.get("role", "guest")
@@ -303,19 +321,16 @@ async def delete_messages(room_id: str, payload: BulkDeletePayload, user: dict =
         batch = db.batch()
         deleted_count = 0
 
-        # Loop through the requested IDs and verify ownership before deleting
         for msg_id in payload.message_ids:
             msg_ref = room_ref.collection("messages").document(msg_id)
             msg_doc = msg_ref.get()
 
             if msg_doc.exists:
                 msg_data = msg_doc.to_dict()
-                # 🚨 SECURITY: They can only delete it if they sent it (unless they are an admin)
                 if msg_data.get("sender_id") == uid or role == "admin":
                     batch.delete(msg_ref)
                     deleted_count += 1
 
-        # Execute all deletions at the exact same time
         if deleted_count > 0:
             batch.commit()
 
@@ -329,7 +344,10 @@ async def delete_messages(room_id: str, payload: BulkDeletePayload, user: dict =
 # 7. HIDE CHAT FROM INBOX (SOFT DELETE)
 # ==========================================
 @router.put("/{room_id}/hide", tags=["Chat & Bidding"])
-async def hide_chat_room(room_id: str, user: dict = Depends(get_current_user)):
+async def hide_chat_room(
+    room_id: str, 
+    user: dict = Depends(get_active_user) # 🔴 BOUNCER APPLIED
+):
     """Soft-deletes a chat room by hiding it from the specific user's inbox."""
     try:
         uid = user.get("uid")
@@ -351,24 +369,46 @@ async def hide_chat_room(room_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))    
     
 
-
-
+# ==========================================
+# 8. CREATE SUPPORT TICKET (From Chat View)
+# ==========================================
 @router.post("/support/ticket", tags=["Chat & Support"])
-async def create_support_ticket(payload: TicketCreate, user: dict = Depends(get_current_user)):
-    """Allows any user to open a general support ticket with the Admin Team."""
+async def create_support_ticket(
+    payload: TicketCreate, 
+    user: dict = Depends(get_current_user) # 🟢 RULE 2: Swapped to base user to allow custom bouncer
+):
+    """Allows any active user to open a general support ticket with the Admin Team."""
     try:
         uid = user.get("uid")
+        role = user.get("role", "guest")
+        status = user.get("status", "active")
         
+        # 🚨 RULE 2: THE "SINGLE APPEAL TICKET" BOUNCER
+        is_banned = (role == "banned" or status == "banned")
+        if is_banned:
+            # Check if they already have an open ticket
+            existing_tickets = db.collection("chat_rooms")\
+                .where("buyer_id", "==", uid)\
+                .where("seller_id", "==", "ADMIN_TEAM")\
+                .where("status", "==", "open")\
+                .limit(1).get()
+                
+            if existing_tickets:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="You already have an open appeal. Please reply in your existing active ticket."
+                )
+
         # 1. Create the Chat Room
         ticket_ref = db.collection("chat_rooms").document()
         ticket_ref.set({
             "is_ticket": True,
-            "buyer_id": uid, # The user asking for help
-            "seller_id": "ADMIN_TEAM", # Routes straight to your Admin Inbox
+            "buyer_id": uid, 
+            "seller_id": "ADMIN_TEAM",
             "subject": f"📩 SUPPORT: {payload.subject}",
             "last_message": payload.message,
             "status": "open",
-            "severity": "low", # Admins can escalate this later if needed
+            "severity": "low", 
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
             "last_sender_id": uid
@@ -388,5 +428,7 @@ async def create_support_ticket(payload: TicketCreate, user: dict = Depends(get_
             "ticket_id": ticket_ref.id
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))    
+        raise HTTPException(status_code=500, detail=str(e))

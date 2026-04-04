@@ -10,8 +10,7 @@ export default function ChatRoomPage() {
   const router = useRouter();
   const params = useParams();
   const roomId = params.roomId as string;
-  const { profile } = useAuth();
-
+  const { profile, isLoading: isAuthLoading } = useAuth();
   const [roomDetails, setRoomDetails] = useState<any>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [roomStatus, setRoomStatus] = useState<'active' | 'sold' | 'resolved'>('active');
@@ -75,17 +74,23 @@ export default function ChatRoomPage() {
   };
 
   useEffect(() => {
-    if (profile === undefined) return;
-    if (profile === null) {
+    if (isAuthLoading) return;
+    if (!profile) {
       setIsLoading(false); 
       return; 
     }
     loadChat();
-  }, [roomId, profile]);
+  }, [roomId, profile , isAuthLoading]);
+
+  // 🚨 THE GOLDEN RULES
+  const isBanned = profile?.role === 'banned';
+  const isAdminThread = roomDetails?.seller_id === 'ADMIN_TEAM';
+  const canChat = !isBanned || isAdminThread; // Banned users can ONLY chat in Admin threads
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (roomStatus === 'sold' || roomStatus === 'resolved') return;
+    if (!canChat) return; // 🚨 Extra safety net
 
     try {
       const token = await auth.currentUser?.getIdToken();
@@ -136,6 +141,11 @@ export default function ChatRoomPage() {
   };
 
   const handleAccept = async (messageId: string | number) => {
+    if (isBanned) {
+      alert("Suspended accounts cannot accept bids.");
+      return;
+    }
+
     const confirmAccept = confirm("Are you sure? This will mark the item as SOLD and close the negotiation.");
     if (!confirmAccept) return;
 
@@ -166,7 +176,6 @@ export default function ChatRoomPage() {
     }
   };
 
-  // 🚨 CORRECTED LISTING MODERATION HANDLER
   const handleModerate = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!modAction || !modReason.trim() || !roomDetails?.listing_id) return;
@@ -180,8 +189,6 @@ export default function ChatRoomPage() {
       if (!token) return;
 
       await moderateListing(token, roomDetails.listing_id, modAction, modReason , roomDetails.shop_id);
-      
-      // 🚨 REMOVED auto-resolve here so the chat stays open and the buttons stay visible!
       
       setModAction(null);
       setModReason('');
@@ -231,10 +238,11 @@ export default function ChatRoomPage() {
     }
   };
 
-  if (isLoading || profile === undefined) return <div className="h-screen flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
-  if (profile === null) return <div className="h-screen flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
+  if (isAuthLoading || isLoading) return <div className="h-screen flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
+  
+  if (!profile || profile.role === 'guest') return <div className="h-screen flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
 
-  const isSupport = roomDetails?.is_ticket === true || roomDetails?.is_ticket === 'true' || roomDetails?.is_ticket === 'True' || roomDetails?.seller_id === 'ADMIN_TEAM';
+  const isSupport = roomDetails?.is_ticket === true || roomDetails?.is_ticket === 'true' || roomDetails?.is_ticket === 'True' || isAdminThread;
   const isAdmin = profile?.role === 'admin';
   const isDirectUserTicket = roomDetails?.listing_id === 'USER_MODERATION';
 
@@ -269,9 +277,12 @@ export default function ChatRoomPage() {
               </button>
             </>
           ) : (
-            <button onClick={() => setIsSelectionMode(true)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition" title="Select messages to delete">
-               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z" /></svg>
-            </button>
+            // 🚨 Banned users cannot delete evidence
+            !isBanned && (
+              <button onClick={() => setIsSelectionMode(true)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition" title="Select messages to delete">
+                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z" /></svg>
+              </button>
+            )
           )}
 
           {/* Status Badges */}
@@ -316,7 +327,6 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* 🚨 CORRECTED: Removed the '&& roomStatus !== resolved' condition here! */}
         {isAdmin && isSupport && roomDetails?.listing_id && !isDirectUserTicket && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-2xl shadow-sm">
              <h3 className="text-red-800 font-black flex items-center gap-2 mb-3 text-sm">🛡️ Item Moderation</h3>
@@ -367,7 +377,8 @@ export default function ChatRoomPage() {
             <div key={msg.id || index} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} my-1`}>
               <div className={`flex items-center gap-2 max-w-[85%] ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                 
-                {isSelectionMode && canDelete && (
+                {/* 🚨 Banned users cannot delete evidence */}
+                {isSelectionMode && canDelete && !isBanned && (
                   <input 
                     type="checkbox" 
                     checked={isSelected}
@@ -378,11 +389,11 @@ export default function ChatRoomPage() {
 
                 <div 
                   onClick={() => {
-                    if (isSelectionMode && canDelete) toggleMessageSelection(msg.id);
+                    if (isSelectionMode && canDelete && !isBanned) toggleMessageSelection(msg.id);
                   }}
                   className={`p-4 rounded-2xl shadow-sm transition-all ${
                     isMe ? 'bg-blue-600 text-white rounded-br-none' : (isSupport ? 'bg-gray-800 text-white rounded-bl-none' : 'bg-white text-gray-800 border rounded-bl-none')
-                  } ${isSelectionMode && canDelete ? 'cursor-pointer hover:opacity-90 ' + (isSelected ? 'ring-4 ring-red-400' : '') : ''}`}
+                  } ${isSelectionMode && canDelete && !isBanned ? 'cursor-pointer hover:opacity-90 ' + (isSelected ? 'ring-4 ring-red-400' : '') : ''}`}
                 >
                   <p className="text-sm whitespace-pre-wrap">{msg.text || "..."}</p>
                   
@@ -390,7 +401,8 @@ export default function ChatRoomPage() {
                     <div className={`mt-3 p-3 rounded-xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>
                       <div className="flex items-center justify-between gap-6">
                         <div><span className="text-[10px] font-bold uppercase opacity-70">Official Bid</span><p className="text-lg font-black">₹{msg.bid_amount}</p></div>
-                        {!isMe && msg.status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && (
+                        {/* 🚨 Banned users cannot accept bids */}
+                        {!isMe && msg.status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && (
                           <button onClick={(e) => { e.stopPropagation(); handleAccept(msg.id); }} className="px-4 py-2 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 transition">Accept</button>
                         )}
                         {msg.status === 'accepted' && <span className="text-xs font-black text-green-500 uppercase">Accepted ✓</span>}
@@ -412,6 +424,13 @@ export default function ChatRoomPage() {
           <div className="py-4 px-6 bg-gray-100 border border-gray-200 rounded-2xl text-center">
             <p className="text-gray-500 font-bold text-sm">
               {roomStatus === 'sold' ? '🎉 Deal finalized. Chat closed.' : '🛡️ Ticket resolved. Chat closed.'}
+            </p>
+          </div>
+        ) : !canChat ? (
+          // 🚨 THE BANNED USER FALLBACK UI
+          <div className="py-4 px-6 bg-red-50 border border-red-200 rounded-2xl text-center">
+            <p className="text-red-600 font-bold text-sm">
+              🚫 Your account is suspended. You can only reply in official Admin Support threads.
             </p>
           </div>
         ) : (

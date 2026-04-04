@@ -1,10 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr
+from typing import Optional
 import random
 from datetime import datetime, timedelta, timezone
 from google.cloud import firestore
 from app.utils.email import send_otp_email
-from app.core.security import get_current_user , get_verified_student
+
+# 🚨 IMPORT THE NEW BOUNCER (get_active_user)
+from app.core.security import get_current_user, get_verified_student, get_active_user 
 from app.services.user_service import UserService
 from app.core.firebase import db
 
@@ -12,7 +15,7 @@ router = APIRouter()
 
 # --- PYDANTIC MODELS (Requests) ---
 class SyncRequest(BaseModel):
-    selected_role: str
+    selected_role: Optional[str] = "guest"
 
 class SendOtpRequest(BaseModel):
     srm_email: EmailStr
@@ -30,7 +33,6 @@ async def sync_user_profile(payload: SyncRequest, user: dict = Depends(get_curre
     try:
         uid = user.get("uid")
         
-        # 🌟 THE PHONE-SAFE FIX 🌟
         email = user.get("email")
         phone = user.get("phone_number")
         
@@ -45,19 +47,25 @@ async def sync_user_profile(payload: SyncRequest, user: dict = Depends(get_curre
         # Hand the work directly to the Service layer
         profile = UserService.sync_user_profile(uid, email, name, payload.selected_role)
         
-        # 🌟 THE SMART ROUTING LOGIC 🌟
+        # 🚨 READ-ONLY BAN LOGIC: Check if the user is suspended
+        is_banned = profile.get("role") == "banned" or profile.get("status") == "banned"
+        
         next_step = "dashboard"
         
-        if profile.get("role") == "guest":
+        if is_banned:
+            # If banned, force the profile role to 'banned' so the frontend catches it
+            profile["role"] = "banned"
+            profile["status"] = "banned"
+        elif profile.get("role") == "guest":
+            # 🌟 NORMAL ROUTING LOGIC for active users 🌟
             if payload.selected_role == "shop":
-                # Check if they already applied to be a shop!
                 shop_doc = db.collection("shops").document(uid).get()
                 if shop_doc.exists and shop_doc.to_dict().get("status") == "pending":
-                    next_step = "shop_pending_approval" # Tell frontend to show the waiting room
+                    next_step = "shop_pending_approval" 
                 else:
-                    next_step = "apply_for_shop" # They haven't applied yet
+                    next_step = "apply_for_shop" 
             elif payload.selected_role == "student":
-                next_step = "verify_srm_email" # Tell frontend to show the OTP screen
+                next_step = "verify_srm_email" 
         
         return {
             "message": "User synchronized", 
@@ -86,20 +94,19 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
 # --- PROGRESSIVE ONBOARDING (OTP) ENDPOINTS ---
 
 @router.post("/send-otp", tags=["User Management"])
-async def send_student_otp(request: SendOtpRequest, user: dict = Depends(get_current_user)):
+async def send_student_otp(
+    request: SendOtpRequest, 
+    user: dict = Depends(get_active_user) # 🚨 THE BOUNCER: Banned users cannot request OTPs
+):
     """Generates a 6-digit OTP, saves it temporarily to Firestore, and EMAILS it."""
     try:
-        uid = user.get("uid") # 🚨 Ensure we grab the user's ID here!
-        
-        # 🚨 Normalize the email to prevent case-sensitivity bugs
+        uid = user.get("uid") 
         safe_email = request.srm_email.strip().lower()
 
         if not safe_email.endswith("@srmist.edu.in"):
             raise HTTPException(status_code=400, detail="Must be a valid @srmist.edu.in email.")
 
-        # ==========================================
-        # 🚨 THE UNIQUENESS CHECK (Prevents Duplicate Accounts)
-        # ==========================================
+        # THE UNIQUENESS CHECK
         existing_users = db.collection("users").where("srm_email", "==", safe_email).limit(1).stream()
         existing_user = next(existing_users, None)
         
@@ -108,7 +115,6 @@ async def send_student_otp(request: SendOtpRequest, user: dict = Depends(get_cur
                 status_code=400, 
                 detail="This SRM email is already registered to another account."
             )
-        # ==========================================
 
         otp_code = str(random.randint(100000, 999999))
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
@@ -117,14 +123,13 @@ async def send_student_otp(request: SendOtpRequest, user: dict = Depends(get_cur
         db.collection("otp_codes").document(safe_email).set({
             "code": otp_code,
             "expires_at": expires_at,
-            "uid_requesting": uid # 🚨 Uses the extracted uid
+            "uid_requesting": uid 
         })
         
-        # 🚨 ACTUALLY SEND THE EMAIL
+        # ACTUALLY SEND THE EMAIL
         email_sent = send_otp_email(safe_email, otp_code)
         
         if not email_sent:
-            # Clean up the useless DB entry if the email failed to send
             db.collection("otp_codes").document(safe_email).delete()
             raise HTTPException(status_code=500, detail="Failed to send the email. Please try again.")
         
@@ -137,7 +142,10 @@ async def send_student_otp(request: SendOtpRequest, user: dict = Depends(get_cur
 
 
 @router.post("/verify-otp", tags=["User Management"])
-async def verify_student_otp(request: VerifyOtpRequest, user: dict = Depends(get_current_user)):
+async def verify_student_otp(
+    request: VerifyOtpRequest, 
+    user: dict = Depends(get_active_user) # 🚨 THE BOUNCER: Banned users cannot verify OTPs
+):
     """Verifies the OTP, promotes the user to 'student', and unfreezes old listings."""
     try:
         uid = user.get("uid")
@@ -158,7 +166,7 @@ async def verify_student_otp(request: VerifyOtpRequest, user: dict = Depends(get
         if otp_data["code"] != request.otp_code.strip():
             raise HTTPException(status_code=400, detail="Invalid OTP code.")
             
-        # 🚨 THE FIX: Use a batch to update the user AND unfreeze their old items!
+        # Use a batch to update the user AND unfreeze their old items!
         batch = db.batch()
         
         # 1. Update the main user document to make them an official student
@@ -169,8 +177,7 @@ async def verify_student_otp(request: VerifyOtpRequest, user: dict = Depends(get
             "verified_at": firestore.SERVER_TIMESTAMP
         })
         
-        # 2. 🌟 UNSUSPEND OLD LISTINGS 🌟
-        # If they were previously demoted to guest, bring their student items back to life!
+        # 2. UNSUSPEND OLD LISTINGS
         user_listings = db.collection("listings").where("owner_id", "==", uid).stream()
         for doc in user_listings:
             if doc.to_dict().get("status") == "suspended":
@@ -189,23 +196,25 @@ async def verify_student_otp(request: VerifyOtpRequest, user: dict = Depends(get
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))    
 
+
 # ==========================================
 # 📊 USER DASHBOARDS
 # ==========================================
 
 @router.get("/dashboard/student", tags=["Dashboards"])
 async def get_student_dashboard(student: dict = Depends(get_verified_student)):
-    """Locked to @srmist.edu.in users only. Returns profile and all their items."""
+    """Locked to @srmist.edu.in users only (and banned users viewing their graveyard)."""
     uid = student.get("uid")
     try:
-        # 1. Fetch all items owned by this student from the 'listings' collection
+        # 1. Fetch all items owned by this user from the 'listings' collection
         docs = db.collection("listings").where("owner_id", "==", uid).stream()
         my_listings = [{"id": doc.id, **doc.to_dict()} for doc in docs]
         
         # 2. Return the profile info + their items!
         return {
-            "role": "student",
-            "message": f"Welcome to the SRM Student Marketplace, {student.get('email')}!",
+            # 🚨 THE FIX: Make the role dynamic so it returns "banned" if they are suspended!
+            "role": student.get("role"), 
+            "message": f"Welcome to the SRM Marketplace, {student.get('email')}!",
             "uid": uid,
             "listings": my_listings
         }

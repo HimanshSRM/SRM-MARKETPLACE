@@ -10,7 +10,7 @@ import toast from 'react-hot-toast';
 import EditListingModal from '../../components/EditListingModal';
 
 export default function StudentDashboardPage() {
-  const { profile } = useAuth();
+  const { profile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
   const [dashboardData, setDashboardData] = useState<any>(null);
@@ -21,7 +21,11 @@ export default function StudentDashboardPage() {
   const [editingListing, setEditingListing] = useState<any>(null);
 
   useEffect(() => {
-    if (profile === null) {
+    // 🚨 0. Wait for Firebase to finish checking
+    if (isAuthLoading) return;
+
+    // 1. If not logged in, kick to login
+    if (!profile) {
       router.push('/login');
       return;
     }
@@ -68,13 +72,17 @@ export default function StudentDashboardPage() {
     }
   };
 
-  if (profile === undefined || isLoading) {
+  if (isAuthLoading || isLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center font-bold text-gray-500">
-        Loading Dashboard...
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Loading Student Dashboard...</p>
       </div>
     );
   }
+
+  // 🚨 2. Safe fallback while router redirects
+  if (!profile) return null;
 
   // Bouncer
   if (profile?.role !== 'student') {

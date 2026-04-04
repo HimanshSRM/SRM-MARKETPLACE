@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { auth } from '@/lib/firebase';
@@ -8,13 +8,32 @@ import { sendStudentOtp, verifyStudentOtp } from '@/lib/api';
 
 export default function VerifyStudentPage() {
   const router = useRouter();
-  const { profile, setProfile } = useAuth();
+  
+  // 🚨 1. Grabbed the auth loading state
+  const { profile, setProfile, isLoading: isAuthLoading } = useAuth();
   
   const [step, setStep] = useState<1 | 2>(1);
   const [email, setEmail] = useState('');
   const [otp, setOtp] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 🚨 2. SMART REDIRECTS
+  useEffect(() => {
+    // Wait for Firebase to finish checking memory
+    if (isAuthLoading) return;
+
+    // If they aren't logged in at all, send them to login
+    if (!profile) {
+      router.replace('/login');
+      return;
+    }
+
+    // If they are already a verified student, they don't need to be here!
+    if (profile.role === 'student') {
+      router.replace('/');
+    }
+  }, [profile, isAuthLoading, router]);
 
   const handleSendOtp = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -71,6 +90,19 @@ export default function VerifyStudentPage() {
       setIsLoading(false);
     }
   };
+
+  // 🚨 3. FLICKER FIX: Show spinner while Firebase loads
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Checking Verification Status...</p>
+      </div>
+    );
+  }
+
+  // 🚨 4. Safe fallback while useEffect redirects
+  if (!profile || profile.role === 'student') return null;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">

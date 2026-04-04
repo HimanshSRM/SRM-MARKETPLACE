@@ -11,26 +11,31 @@ export default function ShopsDirectoryPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Bring in profile to ensure we wait for Firebase to initialize
-  const { profile } = useAuth();
+  // 🚨 1. Grab the auth loading state
+  const { profile, isLoading: isAuthLoading } = useAuth();
 
   useEffect(() => {
-    const fetchShops = async () => {
-      // Don't try to fetch until we know the user's auth status
-      if (profile === undefined) return;
+    // 🚨 2. WAIT FOR FIREBASE FIRST
+    if (isAuthLoading) return;
 
+    const fetchShops = async () => {
       try {
         setIsLoading(true);
         
-        // 1. Get the secure token
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) {
+        // 🚨 3. Now it is safe to check if they are logged out
+        if (!profile) {
           setError("You must be logged in to view the shops directory.");
           setIsLoading(false);
           return;
         }
 
-        // 2. 🚨 Pass the token to fix the 401 Unauthorized Error
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) {
+          setError("Authentication error. Please log in again.");
+          setIsLoading(false);
+          return;
+        }
+
         const data = await getLiveShops(token);
         
         // Only show verified shops in the public directory
@@ -46,7 +51,7 @@ export default function ShopsDirectoryPage() {
     };
 
     fetchShops();
-  }, [profile]);
+  }, [profile, isAuthLoading]); // 🚨 Added isAuthLoading to dependencies
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
@@ -64,8 +69,8 @@ export default function ShopsDirectoryPage() {
           </div>
         )}
 
-        {/* Loading State */}
-        {isLoading ? (
+        {/* 🚨 4. COMBINED LOADING STATE: Show the skeleton while Firebase OR the backend is loading */}
+        {isAuthLoading || isLoading ? (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
             {[1, 2, 3].map((n) => (
               <div key={n} className="bg-white h-48 rounded-2xl border border-gray-100 shadow-sm animate-pulse"></div>

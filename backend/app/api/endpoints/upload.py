@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.security import get_current_user
+# 🚨 SWAPPED: Imported get_active_user
+from app.core.security import get_active_user 
 from app.services.storage_service import generate_signed_upload_url
 
 router = APIRouter()
@@ -11,7 +12,8 @@ upload_limiter = {}
 async def get_signed_url(
     content_type: str = Query(..., regex="^(image/jpeg|image/png|image/webp)$"),
     file_extension: str = Query(..., regex="^(\.jpg|\.jpeg|\.png|\.webp)$"),
-    user: dict = Depends(get_current_user)
+    # 🔴 BOUNCER APPLIED: Blocks banned users from even requesting an upload URL
+    user: dict = Depends(get_active_user) 
 ):
     uid = user.get("uid")
 

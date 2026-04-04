@@ -16,7 +16,8 @@ const NotificationContext = createContext<NotificationContextType>({ unreadCount
 export const useNotifications = () => useContext(NotificationContext);
 
 export const NotificationProvider = ({ children }: { children: React.ReactNode }) => {
-  const { profile } = useAuth();
+  // 🚨 1. Grab isAuthLoading from our AuthContext
+  const { profile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   const [unreadCount, setUnreadCount] = useState(0);
   
@@ -24,28 +25,34 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const lastNotifiedTime = useRef<number>(Date.now());
 
   useEffect(() => {
-    if (!profile || profile.role === 'guest') return;
+    // 🚨 2. WAIT FOR FIREBASE. Do not start the loop until we know who the user is.
+    if (isAuthLoading) return;
+
+    // 🚨 3. If they logged out, reset the count and stop the loop
+    if (!profile || profile.role === 'guest') {
+      setUnreadCount(0);
+      return;
+    }
 
     const checkInbox = async () => {
       try {
         let token;
         
-        // 🚨 THE FIX: Safe Token Fetching to prevent network crashes
+        // Safe Token Fetching to prevent network crashes
         try {
            token = await auth.currentUser?.getIdToken();
         } catch (authError: any) {
            if (authError.code === 'auth/network-request-failed') {
-             // Silently fail if there's a temporary network hiccup
              return; 
            }
-           throw authError; // Rethrow if it's a real auth issue
+           throw authError; 
         }
 
         if (!token) return;
 
         const inbox = await getInbox(token);
         
-        // Ensure arrays exist before spreading to prevent another crash!
+        // Ensure arrays exist before spreading
         const safeBuying = inbox.buying || [];
         const safeSelling = inbox.selling || [];
         const safeSupport = inbox.support || [];
@@ -85,7 +92,6 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
         lastNotifiedTime.current = newestMessageTime;
 
       } catch (error) {
-        // We still catch other API errors here, but they won't crash the page
         console.warn("Silent background inbox check failed:", error);
       }
     };
@@ -95,7 +101,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
     const interval = setInterval(checkInbox, 15000); 
     return () => clearInterval(interval);
 
-  }, [profile, router]);
+  }, [profile, router, isAuthLoading]); // 🚨 4. Added isAuthLoading to dependencies
 
   return (
     <NotificationContext.Provider value={{ unreadCount }}>

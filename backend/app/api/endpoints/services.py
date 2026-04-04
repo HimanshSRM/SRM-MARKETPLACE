@@ -3,7 +3,8 @@ from typing import Optional
 from google.cloud import firestore
 
 from app.core.firebase import db
-from app.core.security import get_verified_student, get_marketplace_user # 🌟 Updated Import
+# 🚨 SWAPPED: Replaced get_verified_student with get_active_user
+from app.core.security import get_active_user, get_marketplace_user 
 from app.models.listing import ListingCreate, ListingStatus, ListingType 
 
 router = APIRouter()
@@ -13,7 +14,7 @@ async def get_live_services(
     category: Optional[str] = Query(None, description="e.g., tutoring, laundry, freelance"),
     limit: int = Query(15, le=30),
     cursor: Optional[str] = Query(None),
-    user: dict = Depends(get_marketplace_user) # 🛡️ SHARED DOOR: Guests, students and shops can view!
+    user: dict = Depends(get_marketplace_user) # 🟢 Browsing allows everyone, including banned users!
 ):
     """
     Fetches a live feed of ONLY services, using strict cursor-based pagination.
@@ -41,6 +42,9 @@ async def get_live_services(
         for doc in docs:
             item = doc.to_dict()
             item["id"] = doc.id
+            # Safety check for datetime objects
+            if "created_at" in item and item["created_at"]:
+                item["created_at"] = item["created_at"].isoformat()
             results.append(item)
             last_doc_id = doc.id
             
@@ -56,12 +60,16 @@ async def get_live_services(
 @router.post("/create", response_model=dict, tags=["Services"])
 async def create_service_ad(
     listing: ListingCreate, 
-    user: dict = Depends(get_verified_student) # 🔒 STRICT DOOR: Only verified students can post here
+    user: dict = Depends(get_active_user) # 🔴 BOUNCER APPLIED: Blocks banned users
 ):
     """
     Allows a verified student to post a service they are offering.
     """
     try:
+        # 🚨 Manual Check: Ensure active user is actually a student or admin
+        if user.get("role") not in ["student", "admin"]:
+            raise HTTPException(status_code=403, detail="Only verified students can post services.")
+
         listing_data = listing.model_dump()
         
         listing_data["owner_id"] = user.get("uid") 
@@ -78,5 +86,8 @@ async def create_service_ad(
         doc_ref.set(listing_data)
         
         return {"message": "Service ad posted successfully!", "id": doc_ref.id}
+    
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to post service: {str(e)}")

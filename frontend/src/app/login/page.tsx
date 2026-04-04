@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { signInWithPopup } from 'firebase/auth';
 import { auth, googleProvider } from '@/lib/firebase';
@@ -9,9 +9,16 @@ import { useAuth } from '@/context/AuthContext';
 
 export default function LoginPage() {
   const router = useRouter();
-  const { setProfile } = useAuth();
+  const { profile, isLoading: isAuthLoading, setProfile } = useAuth();
   const [isAuthenticating, setIsAuthenticating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // 🚨 1. SMART REDIRECT: If they are already logged in, send them away from the login page!
+  useEffect(() => {
+    if (!isAuthLoading && profile && profile.role !== 'guest') {
+      router.replace('/'); 
+    }
+  }, [profile, isAuthLoading, router]);
 
   const handleGoogleLogin = async () => {
     try {
@@ -56,6 +63,16 @@ export default function LoginPage() {
       setIsAuthenticating(false);
     }
   };
+
+  // 🚨 2. FLICKER FIX: Wait for Firebase to check local storage before showing the login box
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Checking secure session...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">

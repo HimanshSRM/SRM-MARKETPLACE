@@ -8,7 +8,9 @@ import { createShopProfile, checkMyShop, restoreShopProfile } from '@/lib/api';
 
 export default function ShopRegistrationPage() {
   const router = useRouter();
-  const { profile, setProfile } = useAuth();
+  
+  // 🚨 1. Grabbed the auth loading state
+  const { profile, setProfile, isLoading: isAuthLoading } = useAuth();
   
   const [isPageLoading, setIsPageLoading] = useState(true); 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -27,8 +29,16 @@ export default function ShopRegistrationPage() {
   });
 
   useEffect(() => {
+    // 🚨 2. WAIT FOR FIREBASE FIRST
+    if (isAuthLoading) return;
+
     const fetchShopStatus = async () => {
-      if (!profile) return;
+      // 🚨 3. If they are not logged in, stop the backend loading spinner early
+      if (!profile) {
+        setIsPageLoading(false);
+        return;
+      }
+
       try {
         const token = await auth.currentUser?.getIdToken();
         if (!token) return;
@@ -45,7 +55,7 @@ export default function ShopRegistrationPage() {
     };
     
     fetchShopStatus();
-  }, [profile]);
+  }, [profile, isAuthLoading]); // 🚨 Added isAuthLoading to dependencies
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -63,7 +73,7 @@ export default function ShopRegistrationPage() {
       // This is now ONLY called when starting fresh (or first time)
       await createShopProfile(token, formData, isOverwriting);
       
-      // 🚨 SMART ROLE HANDLING: Only demote if they were a shop starting completely over
+      // SMART ROLE HANDLING: Only demote if they were a shop starting completely over
       if (profile) {
          const newRole = profile.role === 'shop_verified' ? 'guest' : profile.role;
          setProfile({ ...profile, role: newRole });
@@ -91,7 +101,7 @@ export default function ShopRegistrationPage() {
 
       await restoreShopProfile(token); // Calls the safe backend route
 
-      // 🚨 SMART ROLE HANDLING: Safely demote them to guest if they were a verified shop awaiting re-approval
+      // SMART ROLE HANDLING: Safely demote them to guest if they were a verified shop awaiting re-approval
       if (profile) {
          const newRole = profile.role === 'shop_verified' ? 'guest' : profile.role;
          setProfile({ ...profile, role: newRole });
@@ -114,16 +124,19 @@ export default function ShopRegistrationPage() {
     setIsOverwriting(true);
   };
 
-  if (!profile) {
-    return <div className="p-20 text-center font-bold text-gray-500">Please log in to register a shop.</div>;
-  }
-
-  if (isPageLoading) {
+  // 🚨 4. COMBINED LOADING CHECK: Spin while either Firebase OR the backend is working
+  if (isAuthLoading || isPageLoading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
-        <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Checking Shop Status...</p>
       </div>
     );
+  }
+
+  // 🚨 5. Safe Fallback
+  if (!profile) {
+    return <div className="p-20 text-center font-bold text-red-500">Please log in to register a shop.</div>;
   }
 
   return (

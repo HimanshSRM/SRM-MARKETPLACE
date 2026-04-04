@@ -17,7 +17,7 @@ export interface ShopApplicationData {
 
 export default function ShopApplicationPage() {
   const router = useRouter();
-  const { profile, setProfile } = useAuth();
+  const { profile, setProfile, isLoading: isAuthLoading } = useAuth();
   
   const [formData, setFormData] = useState<ShopApplicationData>({
     shop_name: '',
@@ -94,8 +94,20 @@ export default function ShopApplicationPage() {
     setIsOverwriting(true);
   };
 
+  // 🚨 1. Wait for Firebase to finish checking
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        {/* Note: I made the spinner purple to match your shop branding! */}
+        <div className="w-12 h-12 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Loading Application...</p>
+      </div>
+    );
+  }
+
+  // 🚨 2. Safe fallback if they actually aren't logged in
   if (!profile) {
-    return <div className="p-20 text-center">Please log in to apply for a shop.</div>;
+    return <div className="p-20 text-center font-bold text-red-500">Please log in to apply for a shop.</div>;
   }
 
   return (

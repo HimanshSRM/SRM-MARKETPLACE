@@ -1,10 +1,22 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000' || 'http://localhost:8000' ;
 
 // Add 'guest' to the accepted types and set it as the default
+// 🚨 Add this interface to keep TypeScript happy across the app
+export interface SyncResponse {
+  profile: {
+    uid: string;
+    role: 'guest' | 'student' | 'shop' | 'admin' | 'shop_verified' | 'banned';
+    email: string;
+    name?: string;
+    status?: string;
+  };
+  next_step: 'dashboard' | 'verify_srm_email' | 'apply_for_shop' | 'shop_pending_approval';
+}
+
 export async function syncUserWithBackend(
   token: string, 
   selectedRole: 'guest' | 'student' | 'shop' = 'guest'
-) {
+): Promise<SyncResponse> { // 🚨 Added explicit return type
   try {
     const response = await fetch(`${API_URL}/api/users/sync`, {
       method: 'POST',
@@ -12,20 +24,18 @@ export async function syncUserWithBackend(
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${token}`, 
       },
-      // Now we ALWAYS send the selected_role key, satisfying FastAPI's Pydantic model
       body: JSON.stringify({ selected_role: selectedRole }),
     });
 
     if (!response.ok) {
-      // Let's capture the actual FastAPI error detail to make future debugging easier
       const errorData = await response.json().catch(() => null);
-      console.error("FastAPI Error Detail:", errorData);
+      console.error("FastAPI Sync Error:", errorData);
       throw new Error((errorData && errorData.detail) || 'Failed to sync user with backend');
     }
 
     return await response.json(); 
   } catch (error) {
-    console.error('Backend Sync Error:', error);
+    console.error('Backend Sync Network Error:', error);
     throw error;
   }
 }

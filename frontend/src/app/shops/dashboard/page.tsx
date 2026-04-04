@@ -10,7 +10,7 @@ import {
   addCatalogItem, 
   updateCatalogItem, 
   deleteCatalogItem, 
-  updateShopProfile, // 🚨 Make sure this is in your api.ts!
+  updateShopProfile, 
   Shop 
 } from '@/lib/api';
 import Link from 'next/link';
@@ -113,7 +113,9 @@ function EditShopModal({ currentShop, onClose, onRefresh }: { currentShop: any, 
 // ==========================================
 export default function ShopDashboardPage() {
   const router = useRouter();
-  const { profile } = useAuth();
+  
+  // 🚨 1. Grabbed the auth loading state
+  const { profile, isLoading: isAuthLoading } = useAuth();
 
   const [myShop, setMyShop] = useState<Shop | null>(null);
   const [catalog, setCatalog] = useState<any[]>([]);
@@ -121,7 +123,7 @@ export default function ShopDashboardPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
-  const [isEditModalOpen, setIsEditModalOpen] = useState(false); // 🚨 NEW STATE FOR MODAL
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false); 
 
   // Form State
   const [formData, setFormData] = useState({
@@ -131,9 +133,16 @@ export default function ShopDashboardPage() {
     is_available: true,
   });
 
-  // 🚨 Extracted fetch logic so we can call it after saving profile edits
   const loadDashboardData = async () => {
-    if (!profile) return;
+    // 🚨 2. WAIT FOR FIREBASE FIRST
+    if (isAuthLoading) return;
+
+    // 🚨 3. If they are not logged in, stop the backend loading spinner
+    if (!profile) {
+      setIsLoading(false);
+      return;
+    }
+
     try {
       setIsLoading(true);
       const token = await auth.currentUser?.getIdToken();
@@ -156,7 +165,7 @@ export default function ShopDashboardPage() {
 
   useEffect(() => {
     loadDashboardData();
-  }, [profile]);
+  }, [profile, isAuthLoading]); // 🚨 Added isAuthLoading as a dependency
 
   const handleEditClick = (item: any) => {
     setEditingItemId(item.id);
@@ -198,10 +207,9 @@ export default function ShopDashboardPage() {
           item.id === editingItemId ? { ...item, ...payload } : item
         ));
       } else {
-        // 🚨 FIX: Safely construct the new item for the UI using the returned item_id
         const response : any = await addCatalogItem(token, payload);
         const newItem = {
-          id: response.item_id || response.id || Date.now().toString(), // Fallback ID just in case
+          id: response.item_id || response.id || Date.now().toString(), 
           ...payload
         };
         setCatalog([newItem, ...catalog]);
@@ -234,7 +242,17 @@ export default function ShopDashboardPage() {
     }
   };
 
-  if (isLoading || profile === undefined) return <div className="min-h-screen flex items-center justify-center bg-gray-50 font-bold text-gray-500">Loading Dashboard...</div>;
+  // 🚨 4. COMBINED LOADING CHECK
+  if (isAuthLoading || isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Loading Shop Dashboard...</p>
+      </div>
+    );
+  }
+
+  // Safe fallback
   if (!profile) return null;
 
   if (!myShop) {
@@ -244,7 +262,7 @@ export default function ShopDashboardPage() {
           <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">🏪</div>
           <h2 className="text-2xl font-bold text-gray-900">No Shop Found</h2>
           <p className="text-gray-500 mt-2 mb-6">You need to register a business before you can access the dashboard.</p>
-          <button onClick={() => router.push('/shops/register')} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition">
+          <button onClick={() => router.push('/shop-application')} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition">
             Register a Shop Now
           </button>
         </div>
@@ -255,7 +273,6 @@ export default function ShopDashboardPage() {
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8 relative">
       
-      {/* 🚨 RENDER THE MODAL IF OPEN */}
       {isEditModalOpen && (
         <EditShopModal 
           currentShop={myShop} 
@@ -272,7 +289,6 @@ export default function ShopDashboardPage() {
             <div className="flex flex-wrap items-center gap-3 mt-2">
               <p className="text-sm text-gray-500 font-medium">Managing <span className="text-blue-600 font-bold">{myShop.shop_name || myShop.name}</span></p>
               
-              {/* 🚨 NEW: EDIT PROFILE BUTTON */}
               <button 
                 onClick={() => setIsEditModalOpen(true)}
                 className="text-xs px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold rounded-lg transition-colors border border-gray-200 shadow-sm"

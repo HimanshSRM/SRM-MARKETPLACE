@@ -8,7 +8,7 @@ import { getInbox, createSupportTicket } from '@/lib/api';
 
 export default function SupportPage() {
   const router = useRouter();
-  const { profile } = useAuth();
+  const { profile, isLoading: isAuthLoading } = useAuth();
   
   const [tickets, setTickets] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -19,26 +19,32 @@ export default function SupportPage() {
   const [message, setMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const loadTickets = async () => {
-    if (!profile) return;
-    try {
-      setIsLoading(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      const inbox = await getInbox(token);
-      // We only care about support tickets here!
-      setTickets(inbox.support || []);
-    } catch (error) {
-      console.error("Failed to load tickets:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
   useEffect(() => {
+    if (isAuthLoading) return;
+
+    const loadTickets = async () => {
+      if (!profile) {
+        setIsLoading(false);
+        return;
+      }
+
+      try {
+        setIsLoading(true);
+        const token = await auth.currentUser?.getIdToken();
+        if (!token) return;
+
+        const inbox = await getInbox(token);
+        // We only care about support tickets here!
+        setTickets(inbox.support || []);
+      } catch (error) {
+        console.error("Failed to load tickets:", error);
+      } finally {
+        setIsLoading(false);
+      }
+    };
+
     loadTickets();
-  }, [profile]);
+  }, [profile, isAuthLoading]);
 
   const handleCreateTicket = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -49,31 +55,52 @@ export default function SupportPage() {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
 
-      // 🚨 Sends the data to the new unified function we just wrote in api.ts
       const response = await createSupportTicket(token, { subject, message });
       
-      // Close modal and instantly redirect them into the new live chat room!
       setIsModalOpen(false);
       router.push(`/chat/${response.ticket_id}`);
       
     } catch (error: any) {
       alert(error.message || "Failed to submit ticket.");
-      setIsSubmitting(false);
+    } finally {
+      setIsSubmitting(false); // 🚨 Make sure to reset this even on fail!
     }
   };
 
-  if (isLoading || profile === undefined) return <div className="min-h-screen flex items-center justify-center font-bold text-gray-500">Loading Support Center...</div>;
-  if (profile === null) return <div className="min-h-screen flex items-center justify-center font-bold text-red-500">Please log in to access Support.</div>;
+  if (isAuthLoading || isLoading) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
+        <div className="w-12 h-12 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin mb-4"></div>
+        <p className="font-bold text-gray-500">Loading Support Center...</p>
+      </div>
+    );
+  }
+
+  if (!profile) {
+    return (
+      <div className="min-h-screen flex items-center justify-center font-bold text-red-500">
+        Please log in to access Support.
+      </div>
+    );
+  }
+
+  const isBanned = profile.role === 'banned';
 
   return (
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
       
-      {/* 🚨 RAISE TICKET MODAL */}
+      {/* RAISE TICKET MODAL */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl animate-fade-in-up">
-            <h2 className="text-2xl font-black text-gray-900 mb-2">Raise a Ticket</h2>
-            <p className="text-sm text-gray-500 mb-6">Describe your issue and our Admin team will get back to you shortly.</p>
+            <h2 className="text-2xl font-black text-gray-900 mb-2">
+              {isBanned ? 'Submit Ban Appeal' : 'Raise a Ticket'}
+            </h2>
+            <p className="text-sm text-gray-500 mb-6">
+              {isBanned 
+                ? "You may submit ONE official appeal. Do not spam this form." 
+                : "Describe your issue and our Admin team will get back to you shortly."}
+            </p>
             
             <form onSubmit={handleCreateTicket} className="space-y-4">
               <div>
@@ -96,8 +123,8 @@ export default function SupportPage() {
                 <button type="button" onClick={() => setIsModalOpen(false)} className="flex-1 py-3 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200 transition">
                   Cancel
                 </button>
-                <button type="submit" disabled={isSubmitting} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition disabled:opacity-50">
-                  {isSubmitting ? 'Sending...' : 'Submit Ticket'}
+                <button type="submit" disabled={isSubmitting} className={`flex-1 py-3 text-white font-bold rounded-xl transition disabled:opacity-50 ${isBanned ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}>
+                  {isSubmitting ? 'Sending...' : 'Submit'}
                 </button>
               </div>
             </form>
@@ -110,13 +137,15 @@ export default function SupportPage() {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
           <div>
             <h1 className="text-2xl font-black text-gray-900">Support Center</h1>
-            <p className="text-gray-500 text-sm mt-1">Manage your appeals, reports, and communications with Admins.</p>
+            <p className="text-gray-500 text-sm mt-1">
+              {isBanned ? "View your account status and official appeals." : "Manage your appeals, reports, and communications with Admins."}
+            </p>
           </div>
           <button 
             onClick={() => setIsModalOpen(true)}
-            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow-sm transition whitespace-nowrap"
+            className={`px-6 py-3 text-white font-bold rounded-xl shadow-sm transition whitespace-nowrap ${isBanned ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
           >
-            + Raise New Ticket
+            {isBanned ? 'Appeal Suspension' : '+ Raise New Ticket'}
           </button>
         </div>
 
@@ -133,7 +162,7 @@ export default function SupportPage() {
               {tickets.map((ticket) => (
                 <div 
                   key={ticket.id} 
-                  onClick={() => router.push(`/chat/${ticket.id}`)}
+                  onClick={() => router.push(`/chat/${ticket.chat_room_id || ticket.id}`)}
                   className="p-4 sm:p-6 hover:bg-gray-50 cursor-pointer transition-colors flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center"
                 >
                   <div className="flex-1">
@@ -141,7 +170,7 @@ export default function SupportPage() {
                       {/* Ticket Status Badge */}
                       <span className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-widest rounded-md ${
                         ticket.status === 'resolved' ? 'bg-gray-200 text-gray-600' : 
-                        ticket.subject?.includes('❌') || ticket.subject?.includes('🛑') ? 'bg-red-100 text-red-700' : 
+                        ticket.subject?.includes('❌') || ticket.subject?.includes('🛑') || ticket.subject?.includes('⚠️') ? 'bg-red-100 text-red-700' : 
                         'bg-blue-100 text-blue-700'
                       }`}>
                         {ticket.status === 'resolved' ? 'Resolved' : 'Action Required'}

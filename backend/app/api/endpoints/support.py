@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from google.cloud import firestore
 
 from app.core.firebase import db
-from app.core.security import get_current_user, get_admin_user
+from app.core.security import get_current_user, get_admin_user, get_active_user
 from app.models.support import TicketStatus, TicketCreate, AdminTicketReply ,WarnUserRequest
 
 router = APIRouter()
@@ -12,10 +12,31 @@ router = APIRouter()
 # ==========================================
 
 @router.post("/create", tags=["Support & Admin"])
-async def create_support_ticket(ticket: TicketCreate, user: dict = Depends(get_current_user)):
+async def create_support_ticket(
+    ticket: TicketCreate, 
+    user: dict = Depends(get_current_user) # 🟢 Changed to base user to allow the custom bouncer
+):
     try:
         uid = user.get("uid")
+        role = user.get("role", "guest")
+        status = user.get("status", "active")
         
+        # 🚨 THE "SINGLE APPEAL TICKET" BOUNCER
+        is_banned = (role == "banned" or status == "banned")
+        if is_banned:
+            # Check if they already have an open ticket in the chat_rooms collection
+            existing_tickets = db.collection("chat_rooms")\
+                .where("buyer_id", "==", uid)\
+                .where("seller_id", "==", "ADMIN_TEAM")\
+                .where("status", "==", "open")\
+                .limit(1).get()
+                
+            if existing_tickets:
+                raise HTTPException(
+                    status_code=403, 
+                    detail="You already have an open appeal. Please reply in your existing active ticket in your inbox."
+                )
+
         # 1. Create the Chat Room First
         chat_ref = db.collection("chat_rooms").document()
         chat_room_id = chat_ref.id
@@ -28,7 +49,8 @@ async def create_support_ticket(ticket: TicketCreate, user: dict = Depends(get_c
             "subject": ticket.subject,
             "last_message": ticket.description,
             "updated_at": firestore.SERVER_TIMESTAMP,
-            "is_ticket": True
+            "is_ticket": True,
+            "status": "open" # 🚨 Ensure status is explicitly tracked here!
         })
         
         # Add the user's description as the first message
@@ -55,12 +77,15 @@ async def create_support_ticket(ticket: TicketCreate, user: dict = Depends(get_c
         })
 
         return {"message": "Support ticket created successfully!", "ticket_id": ticket_ref.id, "chat_room_id": chat_room_id}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 🚨 FIXED: Added the missing '@' symbol here!
+
 @router.get("/my-tickets", tags=["Support & Admin"])
-async def get_my_tickets(user: dict = Depends(get_current_user)):
+async def get_my_tickets(user: dict = Depends(get_current_user)): 
+    # 🟢 READ ACTION: Keep get_current_user so Banned users can read their ban appeal ticket
     try:
         uid = user.get("uid")
         tickets_query = db.collection("tickets").where("owner_id", "==", uid).stream()
@@ -68,7 +93,6 @@ async def get_my_tickets(user: dict = Depends(get_current_user)):
         results = []
         for doc in tickets_query:
             data = doc.to_dict()
-            # FIX: Convert datetime to string so FastAPI doesn't crash
             if "created_at" in data and data["created_at"]:
                 data["created_at"] = data["created_at"].isoformat() if hasattr(data["created_at"], 'isoformat') else str(data["created_at"])
             results.append({"id": doc.id, **data})

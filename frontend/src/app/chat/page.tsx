@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-// 🚨 Added hideChatRoom
 import { getInbox, hideChatRoom } from '@/lib/api';
 import { auth } from '@/lib/firebase';
 import Link from 'next/link';
@@ -17,7 +16,7 @@ interface InboxData {
 type InboxTab = 'buying' | 'selling' | 'support';
 
 export default function InboxPage() {
-  const { profile } = useAuth();
+  const { profile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
   const [inboxData, setInboxData] = useState<InboxData>({ buying: [], selling: [], support: [] });
@@ -26,6 +25,8 @@ export default function InboxPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (isAuthLoading) return;
+
     // Redirect guests
     if (profile?.role === 'guest') {
       router.replace('/');
@@ -44,8 +45,11 @@ export default function InboxPage() {
           support: data.support || [] 
         });
 
-        // Smart routing: If they only have support tickets, open that tab automatically
-        if (data.buying?.length === 0 && data.selling?.length === 0 && data.support?.length > 0) {
+        // 🚨 BANNED UX TWEAK: Force them to the Support tab so they see the Admin Warning immediately
+        if (profile?.role === 'banned') {
+          setActiveTab('support');
+        } else if (data.buying?.length === 0 && data.selling?.length === 0 && data.support?.length > 0) {
+          // Smart routing: If they only have support tickets, open that tab automatically
           setActiveTab('support');
         }
 
@@ -58,7 +62,7 @@ export default function InboxPage() {
     };
 
     if (profile) fetchInbox();
-  }, [profile, router]);
+  }, [profile, router, isAuthLoading]);
 
   // Safe Date Formatter
   const formatTime = (dateString?: string) => {
@@ -72,9 +76,8 @@ export default function InboxPage() {
     return isToday ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : d.toLocaleDateString();
   };
 
-  // 🚨 NEW: Handler to soft-delete/hide chat from inbox
   const handleHideChat = async (e: React.MouseEvent, roomId: string, tab: string) => {
-    e.preventDefault(); // Stops the <Link> from navigating to the chat!
+    e.preventDefault(); 
     e.stopPropagation();
 
     if (!window.confirm("Remove this conversation from your inbox?")) return;
@@ -83,10 +86,8 @@ export default function InboxPage() {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
 
-      // Make API Call
       await hideChatRoom(token, roomId);
 
-      // Optimistically remove it from the screen instantly
       setInboxData(prev => ({
         ...prev,
         [tab]: prev[tab as keyof InboxData].filter((room: any) => (room.id || room.room_id) !== roomId)
@@ -96,10 +97,9 @@ export default function InboxPage() {
     }
   };
 
-  // Determine which list to render based on the active tab
   const currentRooms = inboxData[activeTab] || [];
 
-  if (isLoading || profile === undefined) {
+  if (isAuthLoading || isLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="w-10 h-10 border-4 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>
@@ -199,7 +199,6 @@ export default function InboxPage() {
                     key={roomId}
                     className="flex items-center justify-between p-6 hover:bg-gray-50 transition-all cursor-pointer group relative"
                   >
-                    {/* 🚨 Added pr-12 here so text doesn't overlap the trash can */}
                     <div className="flex items-center gap-5 w-full pr-12"> 
                       {/* Avatar Placeholder */}
                       <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 transition-colors ${
@@ -240,7 +239,7 @@ export default function InboxPage() {
                       </div>
                     </div>
 
-                    {/* 🚨 NEW: The Delete Button & Timestamp Container */}
+                    {/* Delete Button & Timestamp Container */}
                     <div className="absolute right-6 flex items-center gap-3">
                       {(room.updated_at || room.created_at) && (
                         <span className="hidden sm:block text-xs text-gray-400 font-medium">

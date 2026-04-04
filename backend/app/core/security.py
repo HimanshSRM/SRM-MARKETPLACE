@@ -41,38 +41,57 @@ def get_user_document(user: dict = Depends(get_current_user)):
     return {**user, **user_doc.to_dict()}
 
 
-def get_verified_student(user_data: dict = Depends(get_user_document)):
+# 🚨 NEW: THE BOUNCER
+def get_active_user(user_data: dict = Depends(get_user_document)):
     """
-    DOOR 2 (Strict Student): Only allows officially verified Students (and Admins).
-    Use this for POSTING standard classified ads. Keeps Shops and Guests out.
+    THE BOUNCER: Checks if the user is suspended.
+    This is the base for any write operations (POST, PUT, DELETE).
     """
-    if user_data.get("role") not in ["student", "admin"]:
+    if user_data.get("role") == "banned" or user_data.get("status") == "banned":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Access denied. Only verified students can post standard ads."
+            detail="Your account has been suspended. You are in read-only mode."
+        )
+    return user_data
+
+
+def get_verified_student(user_data: dict = Depends(get_user_document)):
+    """
+    DOOR 2 (Student Dashboard): Allows Students, Admins, AND Banned users.
+    Use this for GET routes (like viewing the student dashboard graveyard).
+    """
+    # 🚨 Bypassed the active_user bouncer and added "banned"
+    if user_data.get("role") not in ["student", "admin", "banned"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. Only verified students can access this."
         )
     return user_data
 
 
 def get_verified_shop(user_data: dict = Depends(get_user_document)):
     """
-    DOOR 3 (Strict Shop): Only allows Admin-approved Shops.
-    Use this for posting items to a shop's catalog.
+    DOOR 3 (Shop Dashboard): Allows Approved Shops AND Banned users.
+    Use this for GET routes (like viewing the shop dashboard graveyard).
     """
-    if user_data.get("role") != "shop_verified": 
+    # 🚨 Bypassed the active_user bouncer and added "banned"
+    if user_data.get("role") not in ["shop_verified", "banned"]: 
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, 
-            detail="Access Denied. Your shop account is pending admin approval or you are not registered as a shop."
+            detail="Access Denied. Your shop account is pending or suspended."
         )
     return user_data
 
 
 def get_marketplace_user(user_data: dict = Depends(get_user_document)):
     """
-    DOOR 4 (Public Browsing): Allows Guests, Students, Verified Shops, OR Admins.
+    DOOR 4 (Public Browsing): Allows EVERYONE in the database.
     Used ONLY for viewing the public feeds, products, and directories.
+    🚨 Notice this relies on `get_user_document`, completely bypassing the Bouncer!
     """
-    if user_data.get("role") not in ["guest", "student", "shop_verified", "admin"]:
+    allowed_roles = ["guest", "student", "shop", "shop_verified", "admin", "banned"]
+    
+    if user_data.get("role") not in allowed_roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Access denied. Invalid user profile."
@@ -80,10 +99,10 @@ def get_marketplace_user(user_data: dict = Depends(get_user_document)):
     return user_data
 
 
-def get_transacting_user(user_data: dict = Depends(get_user_document)):
+def get_transacting_user(user_data: dict = Depends(get_active_user)):
     """
     DOOR 5 (Interactive Features): Allows Students, Verified Shops, and Admins.
-    STRICTLY BLOCKS GUESTS.
+    STRICTLY BLOCKS GUESTS AND BANNED USERS.
     Used for Messaging, Bidding, and Buying.
     """
     if user_data.get("role") not in ["student", "shop_verified", "admin"]:
@@ -94,7 +113,7 @@ def get_transacting_user(user_data: dict = Depends(get_user_document)):
     return user_data
 
 
-def get_admin_user(user_data: dict = Depends(get_user_document)):
+def get_admin_user(user_data: dict = Depends(get_active_user)):
     """
     DOOR 6 (God Mode): Strictly for Super Admins.
     Used for moderating shops, users, and listings.
