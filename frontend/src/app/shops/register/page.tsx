@@ -28,6 +28,26 @@ export default function ShopRegistrationPage() {
     contact_email: '',   
   });
 
+  // --- PERSISTENT STATE: FORM DRAFT ---
+  // 1. Load saved form data on initial render
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedForm = localStorage.getItem('draft_shopRegistration');
+      if (savedForm) {
+        try {
+          setFormData(JSON.parse(savedForm));
+        } catch (e) {
+          console.error('Failed to parse saved form data');
+        }
+      }
+    }
+  }, []);
+
+  // 2. Save form data to memory whenever it changes
+  useEffect(() => {
+    localStorage.setItem('draft_shopRegistration', JSON.stringify(formData));
+  }, [formData]);
+
   useEffect(() => {
     // 🚨 2. WAIT FOR FIREBASE FIRST
     if (isAuthLoading) return;
@@ -55,7 +75,7 @@ export default function ShopRegistrationPage() {
     };
     
     fetchShopStatus();
-  }, [profile, isAuthLoading]); // 🚨 Added isAuthLoading to dependencies
+  }, [profile, isAuthLoading]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -78,6 +98,9 @@ export default function ShopRegistrationPage() {
          const newRole = profile.role === 'shop_verified' ? 'guest' : profile.role;
          setProfile({ ...profile, role: newRole });
       }
+
+      // 🚨 CLEAR DRAFT ON SUCCESS
+      localStorage.removeItem('draft_shopRegistration');
 
       alert("Shop profile submitted successfully! Waiting for admin verification.");
       router.push('/shops');

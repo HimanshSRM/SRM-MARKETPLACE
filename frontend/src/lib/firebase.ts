@@ -1,5 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
+import { getAuth, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth'; // 🚨 1. Added GithubAuthProvider here
 
 // Your web app's Firebase configuration using Next.js public variables
 const firebaseConfig = {
@@ -15,5 +15,6 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+const githubProvider = new GithubAuthProvider(); // 🚨 2. Initialized GitHub Provider
 
-export { app, auth, googleProvider };
+export { app, auth, googleProvider, githubProvider }; // 🚨 3. Exported it

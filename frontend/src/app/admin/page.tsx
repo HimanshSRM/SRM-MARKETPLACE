@@ -22,7 +22,18 @@ export default function AdminDashboardPage() {
   const router = useRouter();
   const { profile, isLoading: isAuthLoading } = useAuth();
   
+  // --- PERSISTENT STATE: MAIN ADMIN TABS ---
   const [activeTab, setActiveTab] = useState<AdminTab>('shops');
+  
+  useEffect(() => {
+    const saved = localStorage.getItem('adminActiveTab');
+    if (saved) setActiveTab(saved as AdminTab);
+  }, []);
+  
+  useEffect(() => {
+    localStorage.setItem('adminActiveTab', activeTab);
+  }, [activeTab]);
+
   const [isDataLoading, setIsDataLoading] = useState(false);
 
   // Tab States
@@ -41,8 +52,18 @@ export default function AdminDashboardPage() {
   const [warnMessage, setWarnMessage] = useState('');
   const [isWarning, setIsWarning] = useState(false);
 
-  // Support Filters
+  // --- PERSISTENT STATE: SUPPORT SUB-TABS ---
   const [supportView, setSupportView] = useState<'inbox' | 'audit'>('inbox');
+  
+  useEffect(() => {
+    const saved = localStorage.getItem('adminSupportView');
+    if (saved) setSupportView(saved as 'inbox' | 'audit');
+  }, []);
+  
+  useEffect(() => {
+    localStorage.setItem('adminSupportView', supportView);
+  }, [supportView]);
+
   const [auditTarget, setAuditTarget] = useState<'all' | 'users' | 'items'>('all');
   const [auditAction, setAuditAction] = useState<'all' | 'warn' | 'ban' | 'nuke' | 'hide' | 'delete' | 'restore'>('all');
   

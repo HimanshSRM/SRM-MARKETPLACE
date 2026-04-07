@@ -20,7 +20,23 @@ export default function InboxPage() {
   const router = useRouter();
   
   const [inboxData, setInboxData] = useState<InboxData>({ buying: [], selling: [], support: [] });
+  
+  // --- PERSISTENT STATE: INBOX TABS ---
   const [activeTab, setActiveTab] = useState<InboxTab>('buying');
+  
+  // 1. Load saved tab on initial render
+  useEffect(() => {
+    const savedTab = localStorage.getItem('inboxActiveTab');
+    if (savedTab === 'buying' || savedTab === 'selling' || savedTab === 'support') {
+      setActiveTab(savedTab);
+    }
+  }, []);
+
+  // 2. Save tab to memory whenever it changes
+  useEffect(() => {
+    localStorage.setItem('inboxActiveTab', activeTab);
+  }, [activeTab]);
+
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 

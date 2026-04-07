@@ -11,24 +11,54 @@ export default function ChatRoomPage() {
   const params = useParams();
   const roomId = params.roomId as string;
   const { profile, isLoading: isAuthLoading } = useAuth();
+  
   const [roomDetails, setRoomDetails] = useState<any>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [roomStatus, setRoomStatus] = useState<'active' | 'sold' | 'resolved'>('active');
-  const [newMessage, setNewMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
-  
-  // Listing Moderation State
-  const [modAction, setModAction] = useState<'warn' | 'hide' | 'delete' | 'restore' |null>(null);
-  const [modReason, setModReason] = useState('');
-  const [isModerating, setIsModerating] = useState(false);
 
-  // USER Moderation State
-  const [userModReason, setUserModReason] = useState('');
-  const [isUserModerating, setIsUserModerating] = useState(false);
-  
-  // Bidding State
+  // --- PERSISTENT DRAFT STATE: USER CHAT & BIDS ---
+  const [newMessage, setNewMessage] = useState('');
   const [isBidding, setIsBidding] = useState(false);
   const [bidAmount, setBidAmount] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedMsg = localStorage.getItem(`draft_msg_${roomId}`);
+      if (savedMsg) setNewMessage(savedMsg);
+      
+      const savedBid = localStorage.getItem(`draft_bid_${roomId}`);
+      if (savedBid) setBidAmount(savedBid);
+      
+      const savedIsBidding = localStorage.getItem(`draft_isBidding_${roomId}`);
+      if (savedIsBidding === 'true') setIsBidding(true);
+    }
+  }, [roomId]);
+
+  useEffect(() => { localStorage.setItem(`draft_msg_${roomId}`, newMessage); }, [newMessage, roomId]);
+  useEffect(() => { localStorage.setItem(`draft_bid_${roomId}`, bidAmount); }, [bidAmount, roomId]);
+  useEffect(() => { localStorage.setItem(`draft_isBidding_${roomId}`, isBidding.toString()); }, [isBidding, roomId]);
+
+  // --- PERSISTENT DRAFT STATE: ADMIN MODERATION ---
+  const [modAction, setModAction] = useState<'warn' | 'hide' | 'delete' | 'restore' |null>(null);
+  const [modReason, setModReason] = useState('');
+  const [userModReason, setUserModReason] = useState('');
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedMod = localStorage.getItem(`draft_modReason_${roomId}`);
+      if (savedMod) setModReason(savedMod);
+      
+      const savedUserMod = localStorage.getItem(`draft_userModReason_${roomId}`);
+      if (savedUserMod) setUserModReason(savedUserMod);
+    }
+  }, [roomId]);
+
+  useEffect(() => { localStorage.setItem(`draft_modReason_${roomId}`, modReason); }, [modReason, roomId]);
+  useEffect(() => { localStorage.setItem(`draft_userModReason_${roomId}`, userModReason); }, [userModReason, roomId]);
+
+  const [isModerating, setIsModerating] = useState(false);
+  const [isUserModerating, setIsUserModerating] = useState(false);
 
   // Bulk Delete State
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
@@ -80,7 +110,7 @@ export default function ChatRoomPage() {
       return; 
     }
     loadChat();
-  }, [roomId, profile , isAuthLoading]);
+  }, [roomId, profile, isAuthLoading]);
 
   // 🚨 THE GOLDEN RULES
   const isBanned = profile?.role === 'banned';
@@ -103,9 +133,15 @@ export default function ChatRoomPage() {
       );
 
       setMessages((prev) => [...prev, sentMsg]);
+      
+      // 🚨 CLEAR DRAFTS ON SUCCESS
       setNewMessage('');
       setIsBidding(false);
       setBidAmount('');
+      localStorage.removeItem(`draft_msg_${roomId}`);
+      localStorage.removeItem(`draft_bid_${roomId}`);
+      localStorage.removeItem(`draft_isBidding_${roomId}`);
+
     } catch (error) {
       alert("Failed to send.");
     }
@@ -188,10 +224,13 @@ export default function ChatRoomPage() {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
 
-      await moderateListing(token, roomDetails.listing_id, modAction, modReason , roomDetails.shop_id);
+      await moderateListing(token, roomDetails.listing_id, modAction, modReason, roomDetails.shop_id);
       
+      // 🚨 CLEAR DRAFTS ON SUCCESS
       setModAction(null);
       setModReason('');
+      localStorage.removeItem(`draft_modReason_${roomId}`);
+
       loadChat();
       alert(`Action '${modAction}' executed successfully!`);
     } catch (error: any) {
@@ -224,12 +263,15 @@ export default function ChatRoomPage() {
 
       await moderateUser(token, targetUid, action, userModReason, roomId);
 
-      if ( action === 'nuke') {
+      if (action === 'nuke') {
         await resolveSupportTicket(token, roomId);
         setRoomStatus('resolved');
       }
 
+      // 🚨 CLEAR DRAFTS ON SUCCESS
       setUserModReason(""); 
+      localStorage.removeItem(`draft_userModReason_${roomId}`);
+
       loadChat(); 
     } catch (error: any) {
       alert(error.message || "Failed to execute moderation action.");

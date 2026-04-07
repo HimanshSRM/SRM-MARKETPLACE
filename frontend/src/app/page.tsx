@@ -33,7 +33,6 @@ const CATEGORY_MAP = {
 };
 
 export default function HomePage() {
-  // 🚨 1. Grabbed the auth loading state
   const { profile, withRoleCheck, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
@@ -44,9 +43,30 @@ export default function HomePage() {
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Tab & Filter State
+  // --- PERSISTENT STATE: TABS & CATEGORIES ---
   const [activeTab, setActiveTab] = useState<FeedTab>('all');
   const [activeCategory, setActiveCategory] = useState<string>('all');
+  const [isRestoringState, setIsRestoringState] = useState(true);
+
+  // 1. Load saved filters on initial render
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedTab = localStorage.getItem('homeFeedTab');
+      const savedCategory = localStorage.getItem('homeFeedCategory');
+      if (savedTab) setActiveTab(savedTab as FeedTab);
+      if (savedCategory) setActiveCategory(savedCategory);
+    }
+    // Tell the app it is now safe to start fetching data
+    setIsRestoringState(false);
+  }, []);
+
+  // 2. Save filters to memory whenever they change
+  useEffect(() => {
+    if (!isRestoringState) {
+      localStorage.setItem('homeFeedTab', activeTab);
+      localStorage.setItem('homeFeedCategory', activeCategory);
+    }
+  }, [activeTab, activeCategory, isRestoringState]);
 
   // Reporting State
   const [reportingListing, setReportingListing] = useState<{id: string, title: string} | null>(null);
@@ -77,10 +97,9 @@ export default function HomePage() {
   };
 
   // 🚨 2. COMBINED & SMART USE EFFECT
-  // This single effect now safely handles the initial load AND any tab/category changes!
   useEffect(() => {
-    // Wait for AuthContext to figure out who the user is
-    if (isAuthLoading) return;
+    // Wait for Auth AND for the Persistent State to load from memory
+    if (isAuthLoading || isRestoringState) return;
 
     // If no profile, clear the feed and stop the spinner
     if (!profile) {
@@ -95,7 +114,7 @@ export default function HomePage() {
     setError(null);
     fetchProducts('', activeCategory, true).finally(() => setIsLoading(false));
 
-  }, [profile, isAuthLoading, activeCategory, activeTab]); 
+  }, [profile, isAuthLoading, isRestoringState, activeCategory, activeTab]); 
 
   // 3. The "Load More" Handler
   const handleLoadMore = async () => {
@@ -137,7 +156,7 @@ export default function HomePage() {
 
   const handleTabChange = (tab: FeedTab) => {
     setActiveTab(tab);
-    setActiveCategory('all'); 
+    setActiveCategory('all'); // This automatically updates localStorage via the useEffect
   };
 
   const displayedProducts = products.filter((p: any) => {
@@ -192,7 +211,7 @@ export default function HomePage() {
       )}
 
       {/* 🚨 3. RENDER LOGIC: Shows skeleton loaders while Firebase OR Backend is loading! */}
-      {isAuthLoading || isLoading ? (
+      {isAuthLoading || isLoading || isRestoringState ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
           {[1, 2, 3, 4, 5, 6].map((skeleton) => (
             <div key={skeleton} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden animate-pulse">

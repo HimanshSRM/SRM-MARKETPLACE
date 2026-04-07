@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { auth } from '@/lib/firebase';
@@ -26,6 +26,26 @@ export default function ShopApplicationPage() {
     contact_number: '',
     contact_email: '',
   });
+
+  // --- PERSISTENT STATE: FORM DRAFT ---
+  // 1. Load saved form data on initial render
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const savedForm = localStorage.getItem('draft_shopApplication');
+      if (savedForm) {
+        try {
+          setFormData(JSON.parse(savedForm));
+        } catch (e) {
+          console.error('Failed to parse saved application draft');
+        }
+      }
+    }
+  }, []);
+
+  // 2. Save form data to memory whenever it changes
+  useEffect(() => {
+    localStorage.setItem('draft_shopApplication', JSON.stringify(formData));
+  }, [formData]);
   
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -63,6 +83,9 @@ export default function ShopApplicationPage() {
         setProfile({ ...profile, role: 'student' }); // Set back to student while pending
       }
 
+      // 🚨 CLEAR DRAFT ON SUCCESS
+      localStorage.removeItem('draft_shopApplication');
+
       // 3. Route back to directory
       alert("Shop profile submitted successfully! Waiting for admin verification.");
       router.push('/shops');
@@ -92,6 +115,8 @@ export default function ShopApplicationPage() {
     setFormData({ shop_name: '', description: '', location: '', contact_number: '', contact_email: '' });
     setChoiceMade(true);
     setIsOverwriting(true);
+    // Clear any existing drafts since they want to start fresh
+    localStorage.removeItem('draft_shopApplication');
   };
 
   // 🚨 1. Wait for Firebase to finish checking
