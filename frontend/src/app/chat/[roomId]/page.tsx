@@ -14,7 +14,7 @@ export default function ChatRoomPage() {
   
   const [roomDetails, setRoomDetails] = useState<any>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [roomStatus, setRoomStatus] = useState<'active' | 'sold' | 'resolved'>('active');
+  const [roomStatus, setRoomStatus] = useState<'open' | 'locked' | 'delivered' | 'active' | 'sold' | 'resolved'>('active');
   const [isLoading, setIsLoading] = useState(true);
 
   // --- PERSISTENT DRAFT STATE: USER CHAT & BIDS ---
@@ -92,9 +92,13 @@ export default function ChatRoomPage() {
         setRoomDetails(room);
         setMessages(messages || []);
         
-        if (room?.status === 'resolved') setRoomStatus('resolved');
-        const hasAcceptedBid = messages && messages.some((m: any) => m.status === 'accepted');
-        if (hasAcceptedBid || room?.status === 'sold') setRoomStatus('sold');
+        if (room?.type === 'group_order') {
+          setRoomStatus(room.status || 'open');
+        } else {
+          if (room?.status === 'resolved') setRoomStatus('resolved');
+          const hasAcceptedBid = messages && messages.some((m: any) => m.status === 'accepted');
+          if (hasAcceptedBid || room?.status === 'sold') setRoomStatus('sold');
+        }
       }
     } catch (error) {
       console.error("Error loading chat:", error);
@@ -115,12 +119,12 @@ export default function ChatRoomPage() {
   // 🚨 THE GOLDEN RULES
   const isBanned = profile?.role === 'banned';
   const isAdminThread = roomDetails?.seller_id === 'ADMIN_TEAM';
-  const canChat = !isBanned || isAdminThread; // Banned users can ONLY chat in Admin threads
+  const canChat = !isBanned || isAdminThread;
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (roomStatus === 'sold' || roomStatus === 'resolved') return;
-    if (!canChat) return; // 🚨 Extra safety net
+    if (!canChat) return;
 
     try {
       const token = await auth.currentUser?.getIdToken();
@@ -226,7 +230,6 @@ export default function ChatRoomPage() {
 
       await moderateListing(token, roomDetails.listing_id, modAction, modReason, roomDetails.shop_id);
       
-      // 🚨 CLEAR DRAFTS ON SUCCESS
       setModAction(null);
       setModReason('');
       localStorage.removeItem(`draft_modReason_${roomId}`);
@@ -268,7 +271,6 @@ export default function ChatRoomPage() {
         setRoomStatus('resolved');
       }
 
-      // 🚨 CLEAR DRAFTS ON SUCCESS
       setUserModReason(""); 
       localStorage.removeItem(`draft_userModReason_${roomId}`);
 
@@ -281,12 +283,22 @@ export default function ChatRoomPage() {
   };
 
   if (isAuthLoading || isLoading) return <div className="h-screen flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
-  
   if (!profile || profile.role === 'guest') return <div className="h-screen flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
 
   const isSupport = roomDetails?.is_ticket === true || roomDetails?.is_ticket === 'true' || roomDetails?.is_ticket === 'True' || isAdminThread;
   const isAdmin = profile?.role === 'admin';
   const isDirectUserTicket = roomDetails?.listing_id === 'USER_MODERATION';
+  const isGroupOrder = roomDetails?.type === 'group_order';
+
+  // Extract current status from the latest system message for the visual tracker
+  let currentGroupStatus = 'open';
+  if (isGroupOrder) {
+    const latestSys = messages.slice().reverse().find(m => m.sender_id === 'system');
+    if (latestSys) {
+      if (latestSys.text.includes("Locked")) currentGroupStatus = 'locked';
+      if (latestSys.text.includes("ARRIVED")) currentGroupStatus = 'delivered';
+    }
+  }
 
   return (
     <div className="flex flex-col h-screen bg-white max-w-2xl mx-auto shadow-2xl relative">
@@ -299,9 +311,11 @@ export default function ChatRoomPage() {
           </button>
           <div>
             <h2 className="font-bold text-gray-900 line-clamp-1">
-              {isSupport ? roomDetails?.subject || 'Support Ticket' : roomDetails?.listing_title || 'Negotiation'}
+              {isGroupOrder ? `${roomDetails?.app_name} Group Order` : (isSupport ? roomDetails?.subject || 'Support Ticket' : roomDetails?.listing_title || 'Negotiation')}
             </h2>
-            <p className="text-xs text-gray-500">{isSupport ? 'Campus Support' : 'Marketplace Chat'}</p>
+            <p className="text-xs text-gray-500">
+              {isGroupOrder ? 'Cart Pooling Chat' : (isSupport ? 'Campus Support' : 'Marketplace Chat')}
+            </p>
           </div>
         </div>
         
@@ -319,7 +333,6 @@ export default function ChatRoomPage() {
               </button>
             </>
           ) : (
-            // 🚨 Banned users cannot delete evidence
             !isBanned && (
               <button onClick={() => setIsSelectionMode(true)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition" title="Select messages to delete">
                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z" /></svg>
@@ -337,6 +350,26 @@ export default function ChatRoomPage() {
           )}
         </div>
       </div>
+
+      {/* THE VISUAL TRACKER (Group Orders Only) */}
+      {isGroupOrder && (
+        <div className="bg-white px-8 py-3 border-b flex justify-between items-center text-xs font-bold shadow-sm z-10">
+          <div className={`flex flex-col items-center transition-colors duration-300 ${currentGroupStatus === 'open' ? 'text-purple-600' : 'text-gray-400'}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mb-1 shadow-sm ${currentGroupStatus === 'open' ? 'bg-purple-100 ring-2 ring-purple-500' : 'bg-gray-100'}`}>🛒</div>
+            <span>Open</span>
+          </div>
+          <div className={`flex-1 h-1 mx-2 mt-[-15px] rounded-full ${currentGroupStatus !== 'open' ? 'bg-orange-400' : 'bg-gray-100'}`}></div>
+          <div className={`flex flex-col items-center transition-colors duration-300 ${currentGroupStatus === 'locked' ? 'text-orange-500' : 'text-gray-400'}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mb-1 shadow-sm ${currentGroupStatus === 'locked' ? 'bg-orange-100 ring-2 ring-orange-500' : 'bg-gray-100'}`}>🔒</div>
+            <span>Ordered</span>
+          </div>
+          <div className={`flex-1 h-1 mx-2 mt-[-15px] rounded-full ${currentGroupStatus === 'delivered' ? 'bg-green-400' : 'bg-gray-100'}`}></div>
+          <div className={`flex flex-col items-center transition-colors duration-300 ${currentGroupStatus === 'delivered' ? 'text-green-600' : 'text-gray-400'}`}>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center mb-1 shadow-sm ${currentGroupStatus === 'delivered' ? 'bg-green-100 ring-2 ring-green-500' : 'bg-gray-100'}`}>🛎️</div>
+            <span>Arrived</span>
+          </div>
+        </div>
+      )}
 
       {/* Messages Feed */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50">
@@ -394,11 +427,27 @@ export default function ChatRoomPage() {
 
         {messages.map((msg: any, index) => {
           const isMe = msg.sender_id === profile?.uid;
-          const isSystem = msg.sender_id === 'ADMIN_SYSTEM' || msg.is_system_message;
           const canDelete = isMe || isAdmin; 
           const isSelected = selectedMessages.includes(msg.id?.toString());
+          
+          // 🚨 SMART MESSAGE IDENTIFICATION
+          const isBotMessage = msg.sender_id === 'system';
+          const isAdminAction = msg.sender_id === 'ADMIN_SYSTEM' || (msg.is_system_message && !isBotMessage);
 
-          if (isSystem) {
+          // 1. NEUTRAL BOT SYSTEM MESSAGES (For Cart Pools)
+          if (isBotMessage) {
+            return (
+              <div key={msg.id || index} className="flex justify-center my-4 w-full">
+                <div className="px-5 py-2 bg-gray-200/60 border border-gray-200 rounded-full shadow-sm text-center">
+                  <p className="text-xs font-bold text-gray-600">{msg.text}</p>
+                  <span className="text-[9px] font-medium text-gray-400 block mt-0.5">{formatTime(msg.created_at || msg.timestamp)}</span>
+                </div>
+              </div>
+            );
+          }
+
+          // 2. AGGRESSIVE ADMIN ACTION MESSAGES (For Warnings/Bans)
+          if (isAdminAction) {
             return (
               <div key={msg.id || index} className="flex justify-center my-6 w-full">
                 <div className="bg-red-900/10 border border-red-500/30 px-6 py-4 rounded-xl max-w-[90%] sm:max-w-[70%] text-center shadow-sm">
@@ -415,11 +464,17 @@ export default function ChatRoomPage() {
             );
           }
           
+          // 3. REGULAR USER CHAT MESSAGES
           return (
             <div key={msg.id || index} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} my-1`}>
+              
+              {/* SENDER NAME LABEL (Visible for others in group chats) */}
+              {!isMe && msg.sender_name && (
+                <span className="text-[10px] text-gray-500 mb-0.5 ml-2 font-bold">{msg.sender_name}</span>
+              )}
+
               <div className={`flex items-center gap-2 max-w-[85%] ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                 
-                {/* 🚨 Banned users cannot delete evidence */}
                 {isSelectionMode && canDelete && !isBanned && (
                   <input 
                     type="checkbox" 
@@ -443,7 +498,6 @@ export default function ChatRoomPage() {
                     <div className={`mt-3 p-3 rounded-xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>
                       <div className="flex items-center justify-between gap-6">
                         <div><span className="text-[10px] font-bold uppercase opacity-70">Official Bid</span><p className="text-lg font-black">₹{msg.bid_amount}</p></div>
-                        {/* 🚨 Banned users cannot accept bids */}
                         {!isMe && msg.status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && (
                           <button onClick={(e) => { e.stopPropagation(); handleAccept(msg.id); }} className="px-4 py-2 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 transition">Accept</button>
                         )}
@@ -469,7 +523,6 @@ export default function ChatRoomPage() {
             </p>
           </div>
         ) : !canChat ? (
-          // 🚨 THE BANNED USER FALLBACK UI
           <div className="py-4 px-6 bg-red-50 border border-red-200 rounded-2xl text-center">
             <p className="text-red-600 font-bold text-sm">
               🚫 Your account is suspended. You can only reply in official Admin Support threads.
@@ -477,18 +530,18 @@ export default function ChatRoomPage() {
           </div>
         ) : (
           <form onSubmit={handleSendMessage} className="space-y-3">
-             {!isSupport && (
+             {!isSupport && !isGroupOrder && ( // Hide bidding UI inside group orders
                <div className="flex items-center gap-2 px-1">
                   <input type="checkbox" id="bid" checked={isBidding} onChange={(e) => setIsBidding(e.target.checked)} disabled={isSelectionMode} className="rounded cursor-pointer" />
                   <label htmlFor="bid" className="text-xs font-bold text-gray-600 cursor-pointer select-none">Make an Official Bid</label>
                </div>
              )}
              <div className="flex gap-2">
-                {isBidding && !isSupport && (
+                {isBidding && !isSupport && !isGroupOrder && (
                   <input type="number" placeholder="₹" value={bidAmount} onChange={(e) => setBidAmount(e.target.value)} disabled={isSelectionMode} className="w-24 p-3 bg-gray-100 rounded-xl font-bold border-transparent outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:opacity-50" />
                 )}
                 <input type="text" placeholder={isSelectionMode ? "Exit selection mode to type..." : (isBidding ? "Add a note..." : "Type message...")} value={newMessage} onChange={(e) => setNewMessage(e.target.value)} disabled={isSelectionMode} className="flex-1 p-3 bg-gray-100 rounded-xl border-transparent outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:opacity-50" />
-                <button type="submit" disabled={isSelectionMode || (!newMessage.trim() && (!bidAmount && isBidding))} className="p-3 bg-blue-600 text-white font-bold rounded-xl px-6 disabled:opacity-50">Send</button>
+                <button type="submit" disabled={isSelectionMode || (!newMessage.trim() && (!bidAmount && isBidding))} className="p-3 bg-blue-600 text-white font-bold rounded-xl px-6 disabled:opacity-50 hover:bg-blue-700 transition">Send</button>
              </div>
           </form>
         )}

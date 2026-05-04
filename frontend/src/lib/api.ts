@@ -938,3 +938,84 @@ export async function restoreShopProfile(token: string) {
   return await response.json();
 }
 
+// ==========================================
+// GROUP ORDERS (CART POOLING) APIs
+// ==========================================
+
+export const getActiveGroupOrders = async (token: string) => {
+  const res = await fetch(`${API_URL}/api/pools`, {
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || "Failed to fetch active group orders");
+  }
+  return res.json(); // Returns a list of active pools
+};
+
+export const createGroupOrder = async (token: string, orderData: { app_name: string, pickup_location: string, contact_number: string, expires_in_minutes: number, upi_id: string }) => {
+  const res = await fetch(`${API_URL}/api/pools`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(orderData)
+  });
+  if (!res.ok) throw new Error("Failed to create group order");
+  return res.json();
+};
+
+export const joinGroupOrder = async (
+  token: string, 
+  poolId: string, 
+  payload: { contact_number: string, items: { item_name: string, quantity: number, estimated_price: number }[] }
+) => {
+  const res = await fetch(`${API_URL}/api/pools/${poolId}/join`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`
+    },
+    body: JSON.stringify(payload)
+  });
+  
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || "Failed to join the group order");
+  }
+  return res.json();
+};
+
+export const updateGroupOrderStatus = async (token: string, poolId: string, status: 'locked' | 'delivered' | 'cancelled', deliveryFee: number = 0) => {
+  const res = await fetch(`${API_URL}/api/pools/${poolId}/status`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ status, delivery_fee: deliveryFee })
+  });
+  if (!res.ok) throw new Error("Failed to update order status");
+  return res.json();
+};
+
+
+export const kickParticipant = async (token: string, poolId: string, userId: string) => {
+  const res = await fetch(`${API_URL}/api/pools/${poolId}/participants/${userId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || "Failed to kick participant");
+  }
+  return res.json();
+};    
+
+
+export const settleGroupOrder = async (token: string, poolId: string) => {
+  const res = await fetch(`${API_URL}/api/pools/${poolId}/settle`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+  });
+  if (!res.ok) {
+    const error = await res.json();
+    throw new Error(error.detail || "Failed to settle order");
+  }
+  return res.json();
+};

@@ -6,8 +6,9 @@ import { useRouter } from 'next/navigation';
 import { getLiveProducts, Product, initiateChat } from '@/lib/api';
 import { auth } from '@/lib/firebase';
 import ReportModal from '@/components/ReportModal';
+import GroupOrdersTab from '@/components/GroupOrdersTab';
 
-type FeedTab = 'all' | 'product' | 'service' | 'request';
+type FeedTab = 'all' | 'product' | 'service' | 'request' | 'pools';
 
 const CATEGORY_MAP = {
   product: [
@@ -181,10 +182,11 @@ export default function HomePage() {
             <button onClick={() => handleTabChange('product')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'product' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>Products</button>
             <button onClick={() => handleTabChange('service')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'service' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>Services</button>
             <button onClick={() => handleTabChange('request')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'request' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>Requests</button>
+            <button onClick={() => handleTabChange('pools')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'pools' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}> Cart Pools</button>
           </div>
 
           {/* CATEGORIES */}
-          {activeTab !== 'all' && CATEGORY_MAP[activeTab] && (
+          {activeTab !== 'all' && activeTab !== 'pools' && CATEGORY_MAP[activeTab as keyof typeof CATEGORY_MAP] && (
             <div className="flex flex-wrap gap-2 mb-8">
               <button
                 onClick={() => setActiveCategory('all')}
@@ -194,7 +196,7 @@ export default function HomePage() {
               >
                 All {activeTab}s
               </button>
-              {CATEGORY_MAP[activeTab].map((cat) => (
+              {CATEGORY_MAP[activeTab as keyof typeof CATEGORY_MAP].map((cat) => (
                 <button
                   key={cat.id}
                   onClick={() => setActiveCategory(cat.id)}
@@ -229,6 +231,8 @@ export default function HomePage() {
         <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-gray-300">
           <h3 className="text-lg font-medium text-gray-900">Please log in to view the campus feed</h3>
         </div>
+      ) : activeTab === 'pools' ? (
+        <GroupOrdersTab currentUser={profile} />
       ) : displayedProducts.length === 0 ? (
         <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-gray-300">
           <h3 className="text-lg font-medium text-gray-900">No items found</h3>
