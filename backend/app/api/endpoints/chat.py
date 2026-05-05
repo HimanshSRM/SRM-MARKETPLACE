@@ -82,6 +82,9 @@ async def initiate_chat(data: ChatInitiate, user: dict = Depends(get_transacting
 # ==========================================
 # 2. GET USER INBOX (Includes Group Chats)
 # ==========================================
+# ==========================================
+# 2. GET USER INBOX (Includes Group Chats)
+# ==========================================
 @router.get("/inbox", tags=["Chat & Bidding"])
 async def get_user_inbox(user: dict = Depends(get_current_user)): 
     # 🟢 READ ACTION: Keep get_current_user so Banned users can view their inbox
@@ -99,6 +102,7 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
         buying_chats = []
         support_tickets = []
         selling_chats = []
+        pool_chats = [] # 🚨 NEW: Dedicated array for Cart Pools
         
         for doc in buying_query:
             room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
@@ -117,14 +121,20 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
             if "updated_at" in room and room["updated_at"]: room["updated_at"] = str(room["updated_at"])
             selling_chats.append(room)
 
-        # 🔥 Process Group Chats and add them to the inbox
+        # 🔥 Process Group Chats and add them to the NEW pool_chats array
         for doc in group_query:
+            room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
+            
+            # Skip if it somehow ended up in buying/selling (edge case protection)
             if any(r["id"] == doc.id for r in buying_chats) or any(r["id"] == doc.id for r in selling_chats):
                 continue
-            room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
+                
             if uid in room.get("hidden_by", []): continue
             if "updated_at" in room and room["updated_at"]: room["updated_at"] = str(room["updated_at"])
-            buying_chats.append(room) # File group orders under "Buying/Active"
+            
+            # Ensure it's explicitly a group order
+            if room.get("type") == "group_order":
+                pool_chats.append(room) # 🚨 Add to dedicated array
 
         if role == "admin" or email == "himanshyadav202@gmail.com":
             admin_tickets_query = db.collection("chat_rooms").where("seller_id", "==", "ADMIN_TEAM").stream()
@@ -137,8 +147,15 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
         buying_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         selling_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         support_tickets.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
+        pool_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True) # Sort pools
         
-        return {"buying": buying_chats, "selling": selling_chats, "support": support_tickets}
+        # 🚨 Return the new pools array in the response
+        return {
+            "buying": buying_chats, 
+            "selling": selling_chats, 
+            "support": support_tickets,
+            "pools": pool_chats 
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

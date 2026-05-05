@@ -48,6 +48,7 @@ class InboxResponse(BaseModel):
     buying: List[InboxRoom]
     selling: List[InboxRoom]
     support: List[InboxRoom]
+    pools: List[InboxRoom] = []
 
 
 class BulkDeletePayload(BaseModel):

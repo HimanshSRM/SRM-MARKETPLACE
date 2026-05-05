@@ -251,6 +251,7 @@ export interface ChatMessage {
 }
 
 export interface InboxData {
+  pools: never[];
   buying: any[];
   selling: any[];
   support: any[];
@@ -309,7 +310,8 @@ export async function getInbox(token: string): Promise<InboxData> {
   return {
     buying: data.buying || [],
     selling: data.selling || [],
-    support: data.support || []
+    support: data.support || [],
+    pools: data.pools || []
   };
 }
 
@@ -938,6 +940,7 @@ export async function restoreShopProfile(token: string) {
   return await response.json();
 }
 
+
 // ==========================================
 // GROUP ORDERS (CART POOLING) APIs
 // ==========================================
@@ -966,7 +969,7 @@ export const createGroupOrder = async (token: string, orderData: { app_name: str
 export const joinGroupOrder = async (
   token: string, 
   poolId: string, 
-  payload: { contact_number: string, items: { item_name: string, quantity: number, estimated_price: number }[] }
+  payload: { contact_number: string, block: string, items: { item_name: string, quantity: number, estimated_price: number }[] }
 ) => {
   const res = await fetch(`${API_URL}/api/pools/${poolId}/join`, {
     method: 'POST',

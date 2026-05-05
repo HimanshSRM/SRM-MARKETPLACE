@@ -25,6 +25,7 @@ class PoolItem(BaseModel):
 
 class PoolJoin(BaseModel):
     contact_number: str
+    block:str = ""
     items: List[PoolItem]
 
 class PoolStatusUpdate(BaseModel):
@@ -122,6 +123,7 @@ async def join_group_order(pool_id: str, payload: PoolJoin, current_user: dict =
 
         new_participant = {
             "user_id": current_user["uid"], "user_name": user_name, "contact_number": payload.contact_number,
+            "block": payload.block,
             "items": [item.model_dump() for item in payload.items], "total_estimated_price": total_price,
             "added_at": datetime.now(timezone.utc).isoformat()
         }

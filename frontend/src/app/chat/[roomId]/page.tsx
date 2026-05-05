@@ -138,7 +138,7 @@ export default function ChatRoomPage() {
 
       setMessages((prev) => [...prev, sentMsg]);
       
-      // 🚨 CLEAR DRAFTS ON SUCCESS
+      // CLEAR DRAFTS ON SUCCESS
       setNewMessage('');
       setIsBidding(false);
       setBidAmount('');
@@ -282,6 +282,15 @@ export default function ChatRoomPage() {
     }
   };
 
+  // 🚨 SMART BACK BUTTON LOGIC
+  const handleBack = () => {
+    if (window.history.length > 2) {
+      router.back();
+    } else {
+      router.push('/'); 
+    }
+  };
+
   if (isAuthLoading || isLoading) return <div className="h-screen flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
   if (!profile || profile.role === 'guest') return <div className="h-screen flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
 
@@ -306,7 +315,8 @@ export default function ChatRoomPage() {
       {/* Header */}
       <div className="p-4 border-b flex items-center justify-between bg-white sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          <button onClick={() => router.push('/chat')} className="p-2 hover:bg-gray-100 rounded-full">
+          {/* 🚨 THE SMART BACK BUTTON */}
+          <button onClick={handleBack} className="p-2 hover:bg-gray-100 rounded-full transition">
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
           </button>
           <div>

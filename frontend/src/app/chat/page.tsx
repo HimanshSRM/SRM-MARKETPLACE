@@ -11,28 +11,30 @@ interface InboxData {
   buying: any[];
   selling: any[];
   support: any[];
+  pools: any[]; // 🚨 ADDED POOLS
 }
 
-type InboxTab = 'buying' | 'selling' | 'support';
+type InboxTab = 'buying' | 'selling' | 'support' | 'pools'; // 🚨 ADDED POOLS
 
 export default function InboxPage() {
   const { profile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
-  const [inboxData, setInboxData] = useState<InboxData>({ buying: [], selling: [], support: [] });
+  const [inboxData, setInboxData] = useState<InboxData>({ buying: [], selling: [], support: [], pools: [] });
   
-  // --- PERSISTENT STATE: INBOX TABS ---
-  const [activeTab, setActiveTab] = useState<InboxTab>('buying');
-  
-  // 1. Load saved tab on initial render
-  useEffect(() => {
-    const savedTab = localStorage.getItem('inboxActiveTab');
-    if (savedTab === 'buying' || savedTab === 'selling' || savedTab === 'support') {
-      setActiveTab(savedTab);
+  // --- INSTANT PERSISTENT STATE: INBOX TABS ---
+  // 🚨 FIX: Lazy Initializer prevents the "flicker" on back navigation
+  const [activeTab, setActiveTab] = useState<InboxTab>(() => {
+    if (typeof window !== 'undefined') {
+      const savedTab = localStorage.getItem('inboxActiveTab');
+      if (savedTab === 'buying' || savedTab === 'selling' || savedTab === 'support' || savedTab === 'pools') {
+        return savedTab as InboxTab;
+      }
     }
-  }, []);
+    return 'buying'; // Default fallback
+  });
 
-  // 2. Save tab to memory whenever it changes
+  // Save tab to memory whenever it changes
   useEffect(() => {
     localStorage.setItem('inboxActiveTab', activeTab);
   }, [activeTab]);
@@ -58,10 +60,11 @@ export default function InboxPage() {
         setInboxData({
           buying: data.buying || [],
           selling: data.selling || [],
-          support: data.support || [] 
+          support: data.support || [],
+          pools: data.pools || [] 
         });
 
-        // 🚨 BANNED UX TWEAK: Force them to the Support tab so they see the Admin Warning immediately
+        // BANNED UX TWEAK: Force them to the Support tab so they see the Admin Warning immediately
         if (profile?.role === 'banned') {
           setActiveTab('support');
         } else if (data.buying?.length === 0 && data.selling?.length === 0 && data.support?.length > 0) {
@@ -144,7 +147,7 @@ export default function InboxPage() {
         </div>
 
         {/* Tab Switcher */}
-        <div className="flex p-1.5 bg-gray-200/50 backdrop-blur-sm rounded-2xl mb-8 w-full sm:w-[450px] border border-gray-200 overflow-x-auto">
+        <div className="flex p-1.5 bg-gray-200/50 backdrop-blur-sm rounded-2xl mb-8 w-full border border-gray-200 overflow-x-auto scrollbar-hide">
           <button 
             onClick={() => setActiveTab('buying')}
             className={`flex-1 py-2.5 px-4 text-sm font-bold rounded-xl transition-all whitespace-nowrap ${
@@ -160,6 +163,14 @@ export default function InboxPage() {
             }`}
           >
             Selling ({inboxData.selling.length})
+          </button>
+          <button 
+            onClick={() => setActiveTab('pools')}
+            className={`flex-1 py-2.5 px-4 text-sm font-bold rounded-xl transition-all whitespace-nowrap ${
+              activeTab === 'pools' ? 'bg-white text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+            }`}
+          >
+            🛒 Cart Pools ({inboxData.pools.length})
           </button>
           <button 
             onClick={() => setActiveTab('support')}
@@ -192,6 +203,8 @@ export default function InboxPage() {
                   ? "When you message a seller about an item or service, it will show up here."
                   : activeTab === 'selling' 
                   ? "When students bid on your listings, you'll see those conversations here."
+                  : activeTab === 'pools'
+                  ? "When you join or host a Cart Pool, the group chat will appear here."
                   : "When you open a support ticket or receive a warning, it will show up here."}
               </p>
               <button 
@@ -208,22 +221,27 @@ export default function InboxPage() {
                 const isSold = room.status === 'sold';
                 const isResolved = room.status === 'resolved';
                 const isSupport = activeTab === 'support';
+                const isPool = activeTab === 'pools' || room.type === 'group_order';
                 
                 return (
                   <Link 
                     href={`/chat/${roomId}`} 
                     key={roomId}
-                    className="flex items-center justify-between p-6 hover:bg-gray-50 transition-all cursor-pointer group relative"
+                    className={`flex items-center justify-between p-6 transition-all cursor-pointer group relative ${isPool ? 'hover:bg-purple-50/50' : 'hover:bg-gray-50'}`}
                   >
                     <div className="flex items-center gap-5 w-full pr-12"> 
                       {/* Avatar Placeholder */}
                       <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 transition-colors ${
                         isSupport 
                           ? (isResolved ? 'bg-green-50 text-green-600' : 'bg-orange-50 text-orange-600')
+                          : isPool 
+                          ? 'bg-purple-100 text-purple-600'
                           : (isSold ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600')
                       }`}>
                         {isSupport ? (
                            <span className="text-2xl">🛡️</span>
+                        ) : isPool ? (
+                           <span className="text-2xl">🍔</span>
                         ) : (
                           <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l.586-.586z" />
@@ -234,16 +252,21 @@ export default function InboxPage() {
                       {/* Chat Details */}
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2">
-                          <h3 className="text-lg font-bold text-gray-900 group-hover:text-blue-600 truncate transition-colors">
-                            {isSupport ? (room.subject || 'Support Ticket') : (room.listing_title || `Negotiation #${room.listing_id || roomId.substring(0,6)}`)}
+                          <h3 className={`text-lg font-bold text-gray-900 truncate transition-colors ${isPool ? 'group-hover:text-purple-600' : 'group-hover:text-blue-600'}`}>
+                            {isSupport ? (room.subject || 'Support Ticket') : isPool ? (room.title || 'Group Order Chat') : (room.listing_title || `Negotiation #${room.listing_id || roomId.substring(0,6)}`)}
                           </h3>
                           {/* Status Badges */}
-                          {isSold && !isSupport && (
+                          {isSold && !isSupport && !isPool && (
                             <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-wider rounded">Sold</span>
                           )}
                           {isSupport && (
                             <span className={`px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded ${isResolved ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
                               {room.status || 'Open'}
+                            </span>
+                          )}
+                          {isPool && room.app_name && (
+                            <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-[10px] font-black uppercase tracking-wider rounded">
+                              {room.app_name}
                             </span>
                           )}
                         </div>
