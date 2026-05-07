@@ -11,10 +11,10 @@ interface InboxData {
   buying: any[];
   selling: any[];
   support: any[];
-  pools: any[]; // 🚨 ADDED POOLS
+  pools: any[]; 
 }
 
-type InboxTab = 'buying' | 'selling' | 'support' | 'pools'; // 🚨 ADDED POOLS
+type InboxTab = 'buying' | 'selling' | 'support' | 'pools'; 
 
 export default function InboxPage() {
   const { profile, isLoading: isAuthLoading } = useAuth();
@@ -23,7 +23,6 @@ export default function InboxPage() {
   const [inboxData, setInboxData] = useState<InboxData>({ buying: [], selling: [], support: [], pools: [] });
   
   // --- INSTANT PERSISTENT STATE: INBOX TABS ---
-  // 🚨 FIX: Lazy Initializer prevents the "flicker" on back navigation
   const [activeTab, setActiveTab] = useState<InboxTab>(() => {
     if (typeof window !== 'undefined') {
       const savedTab = localStorage.getItem('inboxActiveTab');
@@ -45,7 +44,6 @@ export default function InboxPage() {
   useEffect(() => {
     if (isAuthLoading) return;
 
-    // Redirect guests
     if (profile?.role === 'guest') {
       router.replace('/');
       return;
@@ -64,11 +62,10 @@ export default function InboxPage() {
           pools: data.pools || [] 
         });
 
-        // BANNED UX TWEAK: Force them to the Support tab so they see the Admin Warning immediately
+        // BANNED UX TWEAK
         if (profile?.role === 'banned') {
           setActiveTab('support');
         } else if (data.buying?.length === 0 && data.selling?.length === 0 && data.support?.length > 0) {
-          // Smart routing: If they only have support tickets, open that tab automatically
           setActiveTab('support');
         }
 
@@ -83,7 +80,6 @@ export default function InboxPage() {
     if (profile) fetchInbox();
   }, [profile, router, isAuthLoading]);
 
-  // Safe Date Formatter
   const formatTime = (dateString?: string) => {
     if (!dateString) return ''; 
     const d = new Date(dateString);
@@ -117,6 +113,9 @@ export default function InboxPage() {
   };
 
   const currentRooms = inboxData[activeTab] || [];
+  
+  // Silently remove duplicates returned by the backend using a Map based on Room ID
+  const uniqueRooms = Array.from(new Map(currentRooms.map(room => [room.id || room.room_id, room])).values());
 
   if (isAuthLoading || isLoading) {
     return (
@@ -154,7 +153,7 @@ export default function InboxPage() {
               activeTab === 'buying' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            Buying ({inboxData.buying.length})
+            Buying
           </button>
           <button 
             onClick={() => setActiveTab('selling')}
@@ -162,7 +161,7 @@ export default function InboxPage() {
               activeTab === 'selling' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            Selling ({inboxData.selling.length})
+            Selling
           </button>
           <button 
             onClick={() => setActiveTab('pools')}
@@ -170,7 +169,7 @@ export default function InboxPage() {
               activeTab === 'pools' ? 'bg-white text-purple-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            🛒 Cart Pools ({inboxData.pools.length})
+            🛒 Cart Pools
           </button>
           <button 
             onClick={() => setActiveTab('support')}
@@ -178,7 +177,7 @@ export default function InboxPage() {
               activeTab === 'support' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-500 hover:text-gray-700'
             }`}
           >
-            Support ({inboxData.support.length})
+            Support
           </button>
         </div>
 
@@ -190,7 +189,7 @@ export default function InboxPage() {
 
         {/* Inbox List Area */}
         <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
-          {currentRooms.length === 0 ? (
+          {uniqueRooms.length === 0 ? (
             <div className="p-16 text-center">
               <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
                 <svg className="w-10 h-10 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -216,12 +215,57 @@ export default function InboxPage() {
             </div>
           ) : (
             <div className="divide-y divide-gray-50">
-              {currentRooms.map((room) => {
+              {uniqueRooms.map((room) => {
                 const roomId = room.id || room.room_id;
                 const isSold = room.status === 'sold';
                 const isResolved = room.status === 'resolved';
+                
                 const isSupport = activeTab === 'support';
                 const isPool = activeTab === 'pools' || room.type === 'group_order';
+                const isBuying = activeTab === 'buying';
+                const isSelling = activeTab === 'selling';
+
+                const isValidString = (str: any) => typeof str === 'string' && str.trim() !== '' && str !== 'undefined' && str !== 'null';
+
+                // 🚨 SMART UX: Clean Person Names (No random IDs)
+                let otherPersonName = 'User';
+                if (isBuying) {
+                  otherPersonName = isValidString(room.seller_name) ? room.seller_name : (isValidString(room.seller_email) ? room.seller_email : 'Seller');
+                }
+                if (isSelling) {
+                  otherPersonName = isValidString(room.buyer_name) ? room.buyer_name : (isValidString(room.buyer_email) ? room.buyer_email : 'Buyer');
+                }
+                if (isSupport) otherPersonName = 'Admin Team';
+                if (isPool) otherPersonName = isValidString(room.host_name) ? room.host_name : 'Pool Host';
+
+                const cleanPersonName = otherPersonName.includes('@') ? otherPersonName.split('@')[0] : otherPersonName;
+                const avatarLetter = cleanPersonName.charAt(0).toUpperCase();
+
+                let poolIcon = '🛒';
+                if (isPool && isValidString(room.app_name)) {
+                  const app = room.app_name.toLowerCase();
+                  if (app.includes('zomato') || app.includes('swiggy')) poolIcon = '🍔';
+                  else if (app.includes('blinkit') || app.includes('zepto')) poolIcon = '🛒';
+                }
+
+                // 🚨 SMART UX: Clean Titles (Item is the Star)
+                let displayTitle = 'Marketplace Item';
+                if (isSupport) {
+                    displayTitle = isValidString(room.subject) ? room.subject : 'Support Ticket';
+                } else if (isPool) {
+                    displayTitle = isValidString(room.title) ? room.title : `${cleanPersonName}'s Group Order`;
+                } else {
+                    const itemTitle = room.listing_title || room.item_title || room.item_name || room.product_name;
+                    if (isValidString(itemTitle)) {
+                        displayTitle = itemTitle;
+                    } else {
+                        // Extract from automated message if possible
+                        const autoMsgMatch = room.last_message?.match(/(?:listing for|interested in)\s*["'“‘]?([^"'””]+)["'””]?/i);
+                        if (autoMsgMatch && autoMsgMatch[1]) {
+                            displayTitle = autoMsgMatch[1].trim(); 
+                        }
+                    }
+                }
                 
                 return (
                   <Link 
@@ -230,55 +274,58 @@ export default function InboxPage() {
                     className={`flex items-center justify-between p-6 transition-all cursor-pointer group relative ${isPool ? 'hover:bg-purple-50/50' : 'hover:bg-gray-50'}`}
                   >
                     <div className="flex items-center gap-5 w-full pr-12"> 
-                      {/* Avatar Placeholder */}
-                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 transition-colors ${
+                      {/* Avatar */}
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 transition-colors text-xl font-black ${
                         isSupport 
                           ? (isResolved ? 'bg-green-50 text-green-600' : 'bg-orange-50 text-orange-600')
                           : isPool 
                           ? 'bg-purple-100 text-purple-600'
-                          : (isSold ? 'bg-green-50 text-green-600' : 'bg-blue-50 text-blue-600')
+                          : isBuying 
+                          ? 'bg-blue-50 text-blue-600'
+                          : 'bg-indigo-50 text-indigo-600'
                       }`}>
-                        {isSupport ? (
-                           <span className="text-2xl">🛡️</span>
-                        ) : isPool ? (
-                           <span className="text-2xl">🍔</span>
-                        ) : (
-                          <svg className="w-7 h-7" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 8h2a2 2 0 012 2v6a2 2 0 01-2 2h-2v4l-4-4H9a1.994 1.994 0 01-1.414-.586m0 0L11 14h4a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2v4l.586-.586z" />
-                          </svg>
-                        )}
+                        {isSupport ? '🛡️' : isPool ? poolIcon : avatarLetter}
                       </div>
                       
                       {/* Chat Details */}
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                          <h3 className={`text-lg font-bold text-gray-900 truncate transition-colors ${isPool ? 'group-hover:text-purple-600' : 'group-hover:text-blue-600'}`}>
-                            {isSupport ? (room.subject || 'Support Ticket') : isPool ? (room.title || 'Group Order Chat') : (room.listing_title || `Negotiation #${room.listing_id || roomId.substring(0,6)}`)}
-                          </h3>
-                          {/* Status Badges */}
-                          {isSold && !isSupport && !isPool && (
-                            <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-wider rounded">Sold</span>
-                          )}
+                        <div className="flex items-center gap-2 mb-1.5">
+                          {isBuying && <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-wider rounded">Buying</span>}
+                          {isSelling && <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-black uppercase tracking-wider rounded">Selling</span>}
+                          {isSold && !isSupport && !isPool && <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-wider rounded">Sold</span>}
+                          
                           {isSupport && (
                             <span className={`px-2 py-0.5 text-[10px] font-black uppercase tracking-wider rounded ${isResolved ? 'bg-green-100 text-green-700' : 'bg-orange-100 text-orange-700'}`}>
                               {room.status || 'Open'}
                             </span>
                           )}
-                          {isPool && room.app_name && (
+                          {isPool && isValidString(room.app_name) && (
                             <span className="px-2 py-0.5 bg-purple-100 text-purple-700 text-[10px] font-black uppercase tracking-wider rounded">
                               {room.app_name}
                             </span>
                           )}
                         </div>
-                        <p className="text-sm text-gray-500 mt-1 line-clamp-1 font-medium">
-                          {isSupport 
-                            ? (room.last_message || room.admin_response || room.description || "Open Ticket")
-                            : (room.last_message ? `"${room.last_message}"` : 'No messages yet...')}
+
+                        {/* 🚨 RESTRUCTURED: Title is the Item */}
+                        <h3 className={`text-lg font-bold text-gray-900 truncate transition-colors ${isPool ? 'group-hover:text-purple-600' : 'group-hover:text-blue-600'}`}>
+                          {displayTitle}
+                        </h3>
+                        
+                        {/* 🚨 RESTRUCTURED: Subtitle is "Person Name • Message" */}
+                        <p className="text-sm text-gray-500 mt-1 line-clamp-1 font-medium flex items-center gap-1.5">
+                          <span className="font-bold text-gray-700">
+                            {isSupport ? 'System' : isPool ? 'Group' : cleanPersonName}
+                          </span>
+                          <span className="text-gray-300">•</span>
+                          <span className="truncate">
+                            {isSupport 
+                              ? (room.last_message || room.admin_response || room.description || "Open Ticket")
+                              : (room.last_message ? `"${room.last_message}"` : 'No messages yet...')}
+                          </span>
                         </p>
                       </div>
                     </div>
 
-                    {/* Delete Button & Timestamp Container */}
                     <div className="absolute right-6 flex items-center gap-3">
                       {(room.updated_at || room.created_at) && (
                         <span className="hidden sm:block text-xs text-gray-400 font-medium">

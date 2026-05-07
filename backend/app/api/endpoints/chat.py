@@ -11,7 +11,6 @@ from app.models.chat import (
     BulkDeletePayload,
     TicketCreate
 )
-# 🚨 IMPORT YOUR NEW NOTIFICATION SERVICE
 from app.services.notifications import send_push_notification
 
 router = APIRouter()
@@ -22,10 +21,9 @@ router = APIRouter()
 @router.post("/initiate", tags=["Chat & Bidding"])
 async def initiate_chat(
     data: ChatInitiate, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    background_tasks: BackgroundTasks, 
     user: dict = Depends(get_transacting_user)
 ):
-    # 🛡️ Secure: get_transacting_user blocks Guests AND Banned users
     sender_id = user.get("uid")
     if sender_id == data.owner_id:
         raise HTTPException(status_code=400, detail="You cannot message yourself.")
@@ -78,7 +76,6 @@ async def initiate_chat(
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
-        # 🚨 TRIGGER BACKGROUND NOTIFICATION TO THE SELLER
         background_tasks.add_task(
             send_push_notification,
             user_id=data.owner_id,
@@ -95,73 +92,113 @@ async def initiate_chat(
         raise HTTPException(status_code=500, detail=str(e))
 
 # ==========================================
-# 2. GET USER INBOX (Includes Group Chats)
+# 2. GET USER INBOX (Highly Optimized Bulk Fetch)
 # ==========================================
 @router.get("/inbox", tags=["Chat & Bidding"])
 async def get_user_inbox(user: dict = Depends(get_current_user)): 
-    # 🟢 READ ACTION: Keep get_current_user so Banned users can view their inbox
     try:
         uid = user.get("uid")
         role = user.get("role", "guest")
         email = user.get("email", "")
         
-        buying_query = db.collection("chat_rooms").where("buyer_id", "==", uid).stream()
-        selling_query = db.collection("chat_rooms").where("seller_id", "==", uid).stream()
+        # 1. Fetch all raw room documents first (Converted to lists immediately)
+        raw_buying = list(db.collection("chat_rooms").where("buyer_id", "==", uid).stream())
+        raw_selling = list(db.collection("chat_rooms").where("seller_id", "==", uid).stream())
+        raw_group = list(db.collection("chat_rooms").where("participants", "array_contains", uid).stream())
         
-        # 🔥 Query for Group Order Chat Rooms
-        group_query = db.collection("chat_rooms").where("participants", "array_contains", uid).stream()
+        # 2. Extract ALL unique IDs we need to look up
+        needed_listing_ids = set()
+        needed_user_ids = set()
         
-        buying_chats = []
-        support_tickets = []
-        selling_chats = []
-        pool_chats = [] # Dedicated array for Cart Pools
-        
-        for doc in buying_query:
-            room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
-            if uid in room.get("hidden_by", []): continue
-            if "updated_at" in room and room["updated_at"]: room["updated_at"] = str(room["updated_at"])
-            
-            if room.get("is_ticket") in [True, "true", "True"]:
-                support_tickets.append(room)
-            else:
-                buying_chats.append(room)
+        all_raw_docs = raw_buying + raw_selling + raw_group
+        for doc in all_raw_docs:
+            data = doc.to_dict()
+            if not data.get("listing_title") and data.get("listing_id"):
+                needed_listing_ids.add(data.get("listing_id"))
                 
-        for doc in selling_query:
-            room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
-            if uid in room.get("hidden_by", []): continue
-            if room.get("is_ticket") in [True, "true", "True"]: continue 
-            if "updated_at" in room and room["updated_at"]: room["updated_at"] = str(room["updated_at"])
-            selling_chats.append(room)
+            if not data.get("buyer_name") and data.get("buyer_id"):
+                needed_user_ids.add(data.get("buyer_id"))
+                
+            if not data.get("seller_name") and data.get("seller_id"):
+                needed_user_ids.add(data.get("seller_id"))
+                
+            if data.get("type") == "group_order" and not data.get("host_name") and data.get("host_id"):
+                needed_user_ids.add(data.get("host_id"))
 
-        # 🔥 Process Group Chats and add them to the NEW pool_chats array
-        for doc in group_query:
+        # 3. BULK FETCH: Get all missing Listings in ONE network trip
+        listing_cache = {}
+        if needed_listing_ids:
+            listing_refs = [db.collection("listings").document(l_id) for l_id in needed_listing_ids]
+            for doc in db.get_all(listing_refs):
+                if doc.exists:
+                    d = doc.to_dict()
+                    listing_cache[doc.id] = d.get("title") or d.get("item_name") or d.get("product_name")
+        
+        # 4. BULK FETCH: Get all missing Users in ONE network trip
+        user_cache = {}
+        if needed_user_ids:
+            user_refs = [db.collection("users").document(u_id) for u_id in needed_user_ids]
+            for doc in db.get_all(user_refs):
+                if doc.exists:
+                    d = doc.to_dict()
+                    user_cache[doc.id] = d.get("name") or d.get("email")
+
+        # 5. Assemble the final arrays in memory instantly
+        buying_chats, selling_chats, support_tickets, pool_chats = [], [], [], []
+        
+        def process_room(doc):
             room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
-            
-            # Skip if it somehow ended up in buying/selling (edge case protection)
+            if uid in room.get("hidden_by", []): return None
+            if "updated_at" in room and room["updated_at"]: 
+                room["updated_at"] = str(room["updated_at"])
+                
+            # 🚨 THE FIX: Inject the missing data directly from our high-speed cache
+            if not room.get("listing_title") and room.get("listing_id"):
+                room["listing_title"] = listing_cache.get(room.get("listing_id"))
+                
+            if not room.get("buyer_name") and room.get("buyer_id"):
+                room["buyer_name"] = user_cache.get(room.get("buyer_id"))
+                
+            if not room.get("seller_name") and room.get("seller_id"):
+                room["seller_name"] = user_cache.get(room.get("seller_id"))
+                
+            if room.get("type") == "group_order" and not room.get("host_name") and room.get("host_id"):
+                room["host_name"] = user_cache.get(room.get("host_id"))
+                
+            return room
+
+        for doc in raw_buying:
+            room = process_room(doc)
+            if room:
+                if room.get("is_ticket") in [True, "true", "True"]: support_tickets.append(room)
+                else: buying_chats.append(room)
+                
+        for doc in raw_selling:
+            room = process_room(doc)
+            if room and room.get("is_ticket") not in [True, "true", "True"]:
+                selling_chats.append(room)
+
+        for doc in raw_group:
+            # Skip if already processed in buying/selling to prevent duplicates
             if any(r["id"] == doc.id for r in buying_chats) or any(r["id"] == doc.id for r in selling_chats):
                 continue
-                
-            if uid in room.get("hidden_by", []): continue
-            if "updated_at" in room and room["updated_at"]: room["updated_at"] = str(room["updated_at"])
-            
-            # Ensure it's explicitly a group order
-            if room.get("type") == "group_order":
-                pool_chats.append(room) # Add to dedicated array
+            room = process_room(doc)
+            if room and room.get("type") == "group_order":
+                pool_chats.append(room)
 
+        # Handle Admin Tickets
         if role == "admin" or email == "himanshyadav202@gmail.com":
             admin_tickets_query = db.collection("chat_rooms").where("seller_id", "==", "ADMIN_TEAM").stream()
             for doc in admin_tickets_query:
-                room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
-                if "updated_at" in room and room["updated_at"]: room["updated_at"] = str(room["updated_at"])
-                if not any(t.get("id") == room["id"] for t in support_tickets):
+                room = process_room(doc)
+                if room and not any(t.get("id") == room["id"] for t in support_tickets):
                     support_tickets.append(room)
         
         buying_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         selling_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         support_tickets.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
-        pool_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True) # Sort pools
+        pool_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         
-        # Return the new pools array in the response
         return {
             "buying": buying_chats, 
             "selling": selling_chats, 
@@ -199,7 +236,6 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
         is_seller = room_data.get("seller_id") == uid
         is_admin_support = room_data.get("seller_id") == "ADMIN_TEAM" and (role == "admin" or email == "himanshyadav202@gmail.com")
         
-        # 🔥 Check if they are part of a group chat
         is_participant = uid in room_data.get("participants", [])
         
         if not (is_buyer or is_seller or is_admin_support or is_participant):
@@ -236,7 +272,7 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
 async def send_message(
     room_id: str, 
     req: dict, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    background_tasks: BackgroundTasks, 
     user: dict = Depends(get_current_user)
 ):
     try:
@@ -257,13 +293,11 @@ async def send_message(
         is_seller = room_data.get("seller_id") == uid
         is_admin_support = room_data.get("seller_id") == "ADMIN_TEAM" and (role == "admin" or email == "himanshyadav202@gmail.com")
         
-        # 🔥 Check if they are part of a group chat
         is_participant = uid in room_data.get("participants", [])
         
         if not (is_buyer or is_seller or is_admin_support or is_participant):
             raise HTTPException(status_code=403, detail="403: Access denied. You are not in this chat.")
 
-        # 🚨 CUSTOM BOUNCER FOR BANNED USERS
         is_banned = (role == "banned" or status == "banned")
         if is_banned:
             if room_data.get("seller_id") != "ADMIN_TEAM":
@@ -303,10 +337,8 @@ async def send_message(
                     update_data["admin_response"] = msg_data["text"]
                 t.reference.update(update_data)
 
-        # 🚨 TRIGGER BACKGROUND NOTIFICATIONS
         target_uids = []
         
-        # If it's a Group Order (Cart Pool), notify everyone except the sender
         if room_data.get("type") == "group_order":
             participant_ids = room_data.get("participant_ids", [])
             host_id = room_data.get("host_id")
@@ -315,13 +347,11 @@ async def send_message(
             if host_id and host_id != uid and host_id not in target_uids:
                 target_uids.append(host_id)
         else:
-            # If it's a 1-on-1 chat, figure out who the OTHER person is
             if is_buyer:
                 target_uids.append(room_data.get("seller_id"))
             else:
                 target_uids.append(room_data.get("buyer_id"))
                 
-        # Fire notifications sequentially in the background
         for target_id in target_uids:
             if target_id and target_id != "ADMIN_TEAM":
                 background_tasks.add_task(
@@ -349,7 +379,7 @@ async def send_message(
 async def accept_bid(
     room_id: str, 
     message_id: str, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    background_tasks: BackgroundTasks, 
     user: dict = Depends(get_transacting_user)
 ):
     try:
@@ -376,7 +406,6 @@ async def accept_bid(
         message_ref = room_ref.collection("messages").document(message_id)
         message_ref.update({"bid_status": BidStatus.ACCEPTED.value})
         
-        # 🚨 TRIGGER BACKGROUND NOTIFICATION TO THE BUYER
         buyer_id = room_data.get("buyer_id")
         if buyer_id:
             background_tasks.add_task(

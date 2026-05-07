@@ -84,6 +84,32 @@ export default function ChatRoomPage() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  // 🚨 NEW HELPER: Converts raw URLs and UPI links into clickable <a> tags
+  const renderTextWithLinks = (text: string) => {
+    if (!text) return "...";
+    // Regex matches http://, https://, and upi:// 
+    const urlRegex = /(https?:\/\/[^\s]+|upi:\/\/[^\s]+)/g;
+    const parts = text.split(urlRegex);
+
+    return parts.map((part, i) => {
+      if (part.match(urlRegex)) {
+        return (
+          <a
+            key={i}
+            href={part}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-blue-500 hover:text-blue-700 underline break-all font-bold"
+            onClick={(e) => e.stopPropagation()} // Prevents accidentally selecting the message when clicking the link
+          >
+            {part}
+          </a>
+        );
+      }
+      return <span key={i}>{part}</span>;
+    });
+  };
+
   const loadChatSecurely = async () => {
     try {
       setIsLoading(true);
@@ -534,7 +560,8 @@ export default function ChatRoomPage() {
                     isMe ? 'bg-blue-600 text-white rounded-br-none' : (isSupport ? 'bg-gray-800 text-white rounded-bl-none' : 'bg-white text-gray-800 border rounded-bl-none')
                   } ${isSelectionMode && canDelete && !isBanned ? 'cursor-pointer hover:opacity-90 ' + (isSelected ? 'ring-4 ring-red-400' : '') : ''}`}
                 >
-                  <p className="text-sm whitespace-pre-wrap">{msg.text || "..."}</p>
+                  {/* 🚨 THE FIX: Render text through the helper function to make UPI links clickable */}
+                  <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.text)}</p>
                   
                   {!isSupport && msg.is_bid && msg.bid_amount && (
                     <div className={`mt-3 p-3 rounded-xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>

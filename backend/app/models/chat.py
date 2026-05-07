@@ -23,7 +23,6 @@ class MessageRead(BaseModel):
     bid_status: Optional[BidStatus]
     created_at: datetime 
 
-
 class TicketCreate(BaseModel):
     subject: str
     message: str        
@@ -39,10 +38,9 @@ class ChatInitiate(BaseModel):
 class InboxRoom(BaseModel):
     room_id: str
     listing_id: str
-    # listing_title: str  # Note: You'll need to join this from the listings collection
     last_message: str
     updated_at: datetime
-    status: str = "active" # "active" or "sold"
+    status: str = "active" 
 
 class InboxResponse(BaseModel):
     buying: List[InboxRoom]
@@ -52,6 +50,4 @@ class InboxResponse(BaseModel):
 
 
 class BulkDeletePayload(BaseModel):
-    message_ids: List[str]    
-
-
+    message_ids: List[str]
