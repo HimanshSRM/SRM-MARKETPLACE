@@ -3,7 +3,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
+import { collection, query, orderBy, onSnapshot, doc } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase'; 
 import { getChatMessages, sendMessage, acceptBid, resolveSupportTicket, moderateListing, moderateUser, ChatMessage, deleteChatMessages } from '@/lib/api';
 
 export default function ChatRoomPage() {
@@ -83,22 +84,13 @@ export default function ChatRoomPage() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const loadChat = async () => {
+  const loadChatSecurely = async () => {
     try {
       setIsLoading(true);
       const token = await auth.currentUser?.getIdToken();
       if (token) {
-        const { room, messages } = await getChatMessages(token, roomId);
+        const { room } = await getChatMessages(token, roomId);
         setRoomDetails(room);
-        setMessages(messages || []);
-        
-        if (room?.type === 'group_order') {
-          setRoomStatus(room.status || 'open');
-        } else {
-          if (room?.status === 'resolved') setRoomStatus('resolved');
-          const hasAcceptedBid = messages && messages.some((m: any) => m.status === 'accepted');
-          if (hasAcceptedBid || room?.status === 'sold') setRoomStatus('sold');
-        }
       }
     } catch (error) {
       console.error("Error loading chat:", error);
@@ -108,13 +100,63 @@ export default function ChatRoomPage() {
   };
 
   useEffect(() => {
-    if (isAuthLoading) return;
-    if (!profile) {
-      setIsLoading(false); 
-      return; 
+    // 🚨 BULLETPROOF GUARD: Wait for React Context AND Firebase Auth to be 100% ready
+    if (isAuthLoading || !profile?.uid || !auth.currentUser) {
+      setIsLoading(false);
+      return;
     }
-    loadChat();
-  }, [roomId, profile, isAuthLoading]);
+
+    loadChatSecurely(); // Initial secure load via API
+
+    // Listen to Messages in Real-Time
+    const messagesRef = collection(db, 'chat_rooms', roomId, 'messages');
+    const q = query(messagesRef, orderBy('timestamp', 'asc'));
+
+    const unsubscribeMessages = onSnapshot(q, (snapshot) => {
+      const liveMessages: ChatMessage[] = []; 
+      let hasAcceptedBid = false;
+
+      snapshot.forEach((document) => {
+        const data = document.data();
+        if (data.status === 'accepted' || data.bid_status === 'accepted') hasAcceptedBid = true;
+
+        liveMessages.push({
+          id: document.id,
+          ...data,
+          timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
+          created_at: data.created_at?.toDate ? data.created_at.toDate().toISOString() : data.created_at,
+        } as ChatMessage); 
+      });
+
+      setMessages((prev: ChatMessage[]) => {
+        if (prev.length !== liveMessages.length) setTimeout(scrollToBottom, 100);
+        return liveMessages;
+      });
+
+      if (hasAcceptedBid) setRoomStatus('sold');
+    });
+
+    // Listen to Room Status Updates (Locked, Arrived, Resolved)
+    const roomRef = doc(db, 'chat_rooms', roomId);
+    const unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setRoomDetails((prev: any) => (prev ? { ...prev, ...data } : data)); 
+
+        if (data.type === 'group_order') {
+          setRoomStatus(data.status || 'open');
+        } else {
+          if (data.status === 'resolved') setRoomStatus('resolved');
+          if (data.status === 'sold') setRoomStatus('sold');
+        }
+      }
+    });
+
+    return () => {
+      unsubscribeMessages();
+      unsubscribeRoom();
+    };
+  }, [roomId, profile, isAuthLoading]); // Removed auth.currentUser from deps to prevent unnecessary re-renders
 
   // 🚨 THE GOLDEN RULES
   const isBanned = profile?.role === 'banned';
@@ -130,13 +172,12 @@ export default function ChatRoomPage() {
       const token = await auth.currentUser?.getIdToken();
       if (!token || !profile?.uid) return;
 
-      const sentMsg = await sendMessage(
+      // We still SEND the message via Python so it can run security/banning checks
+      await sendMessage(
         token, roomId, profile.uid,
         newMessage || `Bid: ₹${bidAmount}`, 
         isBidding, isBidding ? parseFloat(bidAmount) : undefined
       );
-
-      setMessages((prev) => [...prev, sentMsg]);
       
       // CLEAR DRAFTS ON SUCCESS
       setNewMessage('');
@@ -170,10 +211,9 @@ export default function ChatRoomPage() {
 
       await deleteChatMessages(token, roomId, selectedMessages);
 
-      setMessages(prev => prev.filter(msg => !selectedMessages.includes(msg.id.toString())));
-      
       setSelectedMessages([]);
       setIsSelectionMode(false);
+      // Data will auto-update via onSnapshot!
 
     } catch (error: any) {
       alert(error.message || "Failed to delete messages.");
@@ -193,8 +233,6 @@ export default function ChatRoomPage() {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
       await acceptBid(token, roomId, messageId);
-      setRoomStatus('sold');
-      loadChat();
       alert("Deal closed! Item marked as sold.");
     } catch (error) {
       alert("Error accepting bid. You might not be the owner.");
@@ -209,7 +247,6 @@ export default function ChatRoomPage() {
       const token = await auth.currentUser?.getIdToken();
       if (!token) return;
       await resolveSupportTicket(token, roomId);
-      setRoomStatus('resolved');
       alert("Ticket resolved successfully.");
     } catch (error) {
       alert("Failed to resolve ticket.");
@@ -233,8 +270,7 @@ export default function ChatRoomPage() {
       setModAction(null);
       setModReason('');
       localStorage.removeItem(`draft_modReason_${roomId}`);
-
-      loadChat();
+      
       alert(`Action '${modAction}' executed successfully!`);
     } catch (error: any) {
       alert(error.message || "Failed to moderate listing.");
@@ -268,13 +304,10 @@ export default function ChatRoomPage() {
 
       if (action === 'nuke') {
         await resolveSupportTicket(token, roomId);
-        setRoomStatus('resolved');
       }
 
       setUserModReason(""); 
       localStorage.removeItem(`draft_userModReason_${roomId}`);
-
-      loadChat(); 
     } catch (error: any) {
       alert(error.message || "Failed to execute moderation action.");
     } finally {
@@ -315,7 +348,6 @@ export default function ChatRoomPage() {
       {/* Header */}
       <div className="p-4 border-b flex items-center justify-between bg-white sticky top-0 z-10">
         <div className="flex items-center gap-3">
-          {/* 🚨 THE SMART BACK BUTTON */}
           <button onClick={handleBack} className="p-2 hover:bg-gray-100 rounded-full transition">
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
           </button>
@@ -508,10 +540,10 @@ export default function ChatRoomPage() {
                     <div className={`mt-3 p-3 rounded-xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>
                       <div className="flex items-center justify-between gap-6">
                         <div><span className="text-[10px] font-bold uppercase opacity-70">Official Bid</span><p className="text-lg font-black">₹{msg.bid_amount}</p></div>
-                        {!isMe && msg.status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && (
+                        {!isMe && msg.status !== 'accepted' && msg.bid_status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && (
                           <button onClick={(e) => { e.stopPropagation(); handleAccept(msg.id); }} className="px-4 py-2 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 transition">Accept</button>
                         )}
-                        {msg.status === 'accepted' && <span className="text-xs font-black text-green-500 uppercase">Accepted ✓</span>}
+                        {(msg.status === 'accepted' || msg.bid_status === 'accepted') && <span className="text-xs font-black text-green-500 uppercase">Accepted ✓</span>}
                       </div>
                     </div>
                   )}

@@ -3,8 +3,9 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { auth } from '@/lib/firebase';
-import { getActiveGroupOrders, createGroupOrder, joinGroupOrder, updateGroupOrderStatus, kickParticipant, settleGroupOrder } from '@/lib/api';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { auth, db } from '@/lib/firebase';
+import { getActiveGroupOrders, createGroupOrder, joinGroupOrder, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage } from '@/lib/api';
 
 // --- INTERFACES ---
 interface PoolItem { item_name: string; quantity: number; estimated_price: number; }
@@ -26,8 +27,8 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const [discoverPools, setDiscoverPools] = useState<GroupOrder[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchOrders = async () => {
-    setIsLoading(true);
+  const fetchOrders = async (showSpinner = true) => {
+    if (showSpinner) setIsLoading(true);
     try {
       const token = await auth.currentUser?.getIdToken();
       if (token) {
@@ -62,19 +63,52 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         }
       }
     } catch (err) { console.error("Failed to load pools", err); } 
-    finally { setIsLoading(false); }
+    finally { if (showSpinner) setIsLoading(false); }
   };
 
-  useEffect(() => { fetchOrders(); }, []);
+  useEffect(() => {
+    // 🚨 GUARD CLAUSE: Prevent Race Condition
+    if (!currentUser?.uid || !auth.currentUser) return;
+    
+    fetchOrders(true);
+
+    // 🚨 THE FIX: Listen to the 'group_orders' collection instead of 'chat_rooms'
+    // Our security rules allow reading 'group_orders', preventing the permission-denied crash!
+    const q = collection(db, 'group_orders');
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      if (!snapshot.metadata.hasPendingWrites) {
+         fetchOrders(false);
+      }
+    });
+
+    return () => unsubscribe();
+  }, [currentUser]);
 
   return (
     <div className="space-y-8 animate-fade-in-up">
-      <div className="flex justify-between items-center bg-purple-50 p-6 rounded-3xl border border-purple-100 shadow-sm">
+      
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-purple-50 p-6 rounded-3xl border border-purple-100 shadow-sm gap-4">
         <div>
           <h2 className="text-xl font-black text-purple-900">Cart Pooling</h2>
           <p className="text-sm text-purple-700 mt-1 font-medium">Split delivery fees by joining an active order.</p>
         </div>
-        <button onClick={() => setShowCreateModal(true)} className="px-6 py-3 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition">+ Start an Order</button>
+        <div className="flex gap-2 w-full sm:w-auto">
+          <button 
+            onClick={() => fetchOrders(true)} 
+            className="px-4 py-3 bg-white text-purple-600 border border-purple-200 font-bold rounded-xl shadow-sm hover:bg-purple-100 transition flex items-center justify-center"
+            title="Refresh Feed"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+          </button>
+          
+          <button 
+            onClick={() => setShowCreateModal(true)} 
+            className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition"
+          >
+            + Start an Order
+          </button>
+        </div>
       </div>
 
       {isLoading ? (
@@ -85,7 +119,7 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
             <div>
               <h3 className="text-lg font-black text-gray-900 mb-4 flex items-center gap-2">🛒 My Active Pools</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {myPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={fetchOrders}/>)}
+                {myPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
               </div>
             </div>
           )}
@@ -96,16 +130,16 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
               <div className="text-center py-16 bg-white rounded-3xl border border-dashed border-gray-300"><p className="text-gray-500 font-medium">No open cart pools to join right now.</p></div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {discoverPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={fetchOrders}/>)}
+                {discoverPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
               </div>
             )}
           </div>
         </>
       )}
 
-      {showCreateModal && <CreateOrderModal onClose={() => setShowCreateModal(false)} onSuccess={() => { setShowCreateModal(false); fetchOrders(); }} />}
+      {showCreateModal && <CreateOrderModal onClose={() => setShowCreateModal(false)} onSuccess={() => { setShowCreateModal(false); fetchOrders(true); }} />}
       {showJoinModal && <JoinOrderModal order={showJoinModal} onClose={() => setShowJoinModal(null)} router={router} />}
-      {showManageModal && <ManageOrderModal order={showManageModal} onClose={() => setShowManageModal(null)} onRefresh={fetchOrders} />}
+      {showManageModal && <ManageOrderModal order={showManageModal} currentUser={currentUser} onClose={() => setShowManageModal(null)} onRefresh={() => fetchOrders(true)} />}
     </div>
   );
 }
@@ -154,12 +188,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
           <span className="px-3 py-1 bg-yellow-100 text-yellow-800 text-[10px] font-black uppercase tracking-widest rounded-lg">{order.app_name}</span>
           <div className="flex items-center gap-2 mt-2">
             <h3 className="text-lg font-bold text-gray-900">{order.host_name}'s Order</h3>
-            {!isHost && hasJoined && (
-              <div className="flex gap-1">
-                <a href={`https://wa.me/91${order.contact_number.replace(/\D/g, '')}`} target="_blank" className="p-1.5 bg-green-50 text-green-700 rounded-lg hover:bg-green-100 transition" title="WhatsApp Host"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 00-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
-                <a href={`tel:+91${order.contact_number.replace(/\D/g, '')}`} className="p-1.5 bg-blue-50 text-blue-700 rounded-lg hover:bg-blue-100 transition" title="Call Host"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg></a>
-              </div>
-            )}
           </div>
           <p className="text-xs text-gray-500 font-medium mt-1">📍 Meet at: {order.pickup_location}</p>
         </div>
@@ -205,8 +233,9 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
 // ==========================================
 // 3. THE MANAGE ORDER MODAL (Host View)
 // ==========================================
-function ManageOrderModal({ order, onClose, onRefresh }: { order: GroupOrder, onClose: () => void, onRefresh: () => Promise<void> }) {
+function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: GroupOrder, currentUser: any, onClose: () => void, onRefresh: () => Promise<void> }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isBlasting, setIsBlasting] = useState(false); 
   const totalPoolValue = order.participants.reduce((acc, p) => acc + p.total_estimated_price, 0);
 
   const handleRefresh = async () => { setIsRefreshing(true); await onRefresh(); setIsRefreshing(false); };
@@ -239,15 +268,6 @@ function ManageOrderModal({ order, onClose, onRefresh }: { order: GroupOrder, on
   const handleCancelOrder = async () => {
     if (!window.confirm("Are you sure you want to cancel this entire order? All participants will be notified.")) return;
     
-    if (order.participants.length > 0) {
-      const wantToBlast = window.confirm("Do you want to send a WhatsApp blast to tell everyone it's cancelled?");
-      if (wantToBlast) {
-        let msg = `❌ *${order.app_name} Order Cancelled!*\nHey guys, I had to cancel the group order. Sorry about that!\n\n`;
-        order.participants.forEach(p => { msg += `👤 ${p.user_name} (${p.contact_number})\n`; });
-        window.open(`https://wa.me/?text=${encodeURIComponent(msg)}`, '_blank');
-      }
-    }
-
     setIsRefreshing(true);
     try {
       const token = await auth.currentUser?.getIdToken();
@@ -262,38 +282,46 @@ function ManageOrderModal({ order, onClose, onRefresh }: { order: GroupOrder, on
     }
   };
 
-  const handleWhatsAppBlast = () => {
+  // 🚨 IN-APP REAL-TIME CHAT BLAST
+  const handleInAppBlast = async () => {
     const fee = order.delivery_fee || 0;
     const totalPeople = order.participants.length + 1; 
     const feePerPerson = fee / totalPeople;
 
     let message = "";
     if (order.status === 'open' || order.status === 'locked') {
-      message = `🛒 *Locking the ${order.app_name} Order!*\nI am placing the order now.\n\n`;
+      message = `🛒 *LOCKING ORDER: ${order.app_name}*\nI am placing the order now. Here is the payment breakdown:\n\n`;
     } else {
-      message = `🛎️ *${order.app_name} is Here!*\nPlease meet at ${order.pickup_location}.\n\n`;
+      message = `🛎️ *ORDER ARRIVED: ${order.app_name}*\nPlease meet at ${order.pickup_location}. Breakdown:\n\n`;
     }
     
-    message += `*Payment Breakdown & Links:*\n`;
     const encodedName = encodeURIComponent(order.host_name);
     
     order.participants.forEach(p => { 
       const finalAmount = Math.ceil(p.total_estimated_price + feePerPerson);
-      message += `👤 *${p.user_name}*: ₹${finalAmount} ${feePerPerson > 0 ? `(includes ₹${Math.ceil(feePerPerson)} fee split)` : ''}\n`; 
+      message += `👤 ${p.user_name}: ₹${finalAmount} ${feePerPerson > 0 ? `(includes ₹${Math.ceil(feePerPerson)} fee)` : ''}\n`; 
       
       if (order.upi_id) {
-        message += `👉 Pay: upi://pay?pa=${order.upi_id}&pn=${encodedName}&cu=INR&am=${finalAmount}\n\n`;
+        message += `👉 upi://pay?pa=${order.upi_id}&pn=${encodedName}&cu=INR&am=${finalAmount}\n\n`;
       } else {
         message += `\n`;
       }
     });
 
-    message += `\nHost: ${order.host_name} (${order.contact_number})`;
-    if (!order.upi_id) {
-      message += `\nPlease bring exact change or keep UPI ready!`;
-    }
+    if (!order.upi_id) message += `\nPlease bring exact change or keep UPI ready!`;
 
-    window.open(`https://wa.me/?text=${encodeURIComponent(message)}`, '_blank');
+    setIsBlasting(true);
+    try {
+      const token = await auth.currentUser?.getIdToken();
+      if (token) {
+        await sendMessage(token, order.chat_room_id, currentUser.uid, message, false);
+        alert("✅ Breakdown sent successfully to the Group Chat!");
+      }
+    } catch (err) {
+      alert("Failed to send breakdown to chat.");
+    } finally {
+      setIsBlasting(false);
+    }
   };
 
   return (
@@ -310,7 +338,14 @@ function ManageOrderModal({ order, onClose, onRefresh }: { order: GroupOrder, on
           </div>
           <div className="flex gap-2">
             {order.participants.length > 0 && (
-              <button onClick={handleWhatsAppBlast} className="px-3 bg-green-100 text-green-700 rounded-xl hover:bg-green-200 transition font-bold text-xs flex items-center gap-1"><svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 00-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg> Blast</button>
+              <button 
+                onClick={handleInAppBlast} 
+                disabled={isBlasting}
+                className="px-3 bg-blue-100 text-blue-700 rounded-xl hover:bg-blue-200 transition font-bold text-xs flex items-center gap-1 disabled:opacity-50"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
+                {isBlasting ? 'Sending...' : 'Send to Chat'}
+              </button>
             )}
             <button onClick={handleRefresh} disabled={isRefreshing} className="p-2 bg-purple-50 text-purple-600 rounded-xl hover:bg-purple-100 transition"><svg className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg></button>
             <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 rounded-xl transition"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
@@ -321,38 +356,64 @@ function ManageOrderModal({ order, onClose, onRefresh }: { order: GroupOrder, on
           <div className="text-center py-10 bg-gray-50 rounded-2xl border border-dashed"><p className="text-gray-500 font-medium">Waiting for people to join...</p></div>
         ) : (
           <div className="space-y-4">
-            {order.participants.map((p, idx) => (
-              <div key={idx} className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex justify-between items-start">
-                <div className="w-full">
-                  <div className="flex items-center mb-1">
-                    <h4 className="font-bold text-gray-900 flex items-center flex-wrap gap-2">
-                      {p.user_name} 
-                      <span className="text-xs text-gray-400 font-normal">({p.contact_number})</span>
-                      {p.block && (
-                        <span className="text-[10px] font-black text-purple-600 bg-purple-100 px-2 py-0.5 rounded-lg uppercase tracking-wider">
-                          🏢 {p.block}
-                        </span>
+            {order.participants.map((p, idx) => {
+              // 🚨 SMART 1-ON-1 WHATSAPP MESSAGE GENERATOR
+              const fee = order.delivery_fee || 0;
+              const totalPeople = order.participants.length + 1; 
+              const feePerPerson = fee / totalPeople;
+              const finalAmount = Math.ceil(p.total_estimated_price + feePerPerson);
+              
+              let waMessage = order.status === 'open' || order.status === 'locked'
+                ? `🛒 *Locking the ${order.app_name} Order!*\nHey ${p.user_name}, I am placing the order now.\n\n`
+                : `🛎️ *${order.app_name} is Here!*\nHey ${p.user_name}, please meet at ${order.pickup_location}.\n\n`;
+
+              waMessage += `*Your Payment Breakdown:*\n`;
+              waMessage += `Total: ₹${finalAmount} ${feePerPerson > 0 ? `(includes ₹${Math.ceil(feePerPerson)} fee split)` : ''}\n\n`;
+
+              if (order.upi_id) {
+                waMessage += `👉 Click to Pay: upi://pay?pa=${order.upi_id}&pn=${encodeURIComponent(order.host_name)}&cu=INR&am=${finalAmount}\n\n`;
+              } else {
+                waMessage += `Please bring exact change or keep UPI ready!\n\n`;
+              }
+
+              waMessage += `Host: ${order.host_name} (${order.contact_number})`;
+              const smartWaLink = `https://wa.me/91${p.contact_number.replace(/\D/g, '')}?text=${encodeURIComponent(waMessage)}`;
+
+              return (
+                <div key={idx} className="p-4 bg-gray-50 rounded-2xl border border-gray-100 flex justify-between items-start">
+                  <div className="w-full">
+                    <div className="flex items-center mb-1">
+                      <h4 className="font-bold text-gray-900 flex items-center flex-wrap gap-2">
+                        {p.user_name} 
+                        <span className="text-xs text-gray-400 font-normal">({p.contact_number})</span>
+                        {p.block && (
+                          <span className="text-[10px] font-black text-purple-600 bg-purple-100 px-2 py-0.5 rounded-lg uppercase tracking-wider">
+                            🏢 {p.block}
+                          </span>
+                        )}
+                      </h4>
+                      {order.status === 'open' && (
+                        <button onClick={() => handleKick(p.user_id, p.user_name)} className="p-1.5 ml-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition" title={`Remove ${p.user_name}`}><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
                       )}
-                    </h4>
-                    {order.status === 'open' && (
-                      <button onClick={() => handleKick(p.user_id, p.user_name)} className="p-1.5 ml-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition" title={`Remove ${p.user_name}`}><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
-                    )}
+                    </div>
+                    <ul className="mt-2 space-y-2">
+                      {p.items.map((item, i) => (
+                        <li key={i} className="text-sm text-gray-600 flex items-center justify-between border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                          <span><span className="font-black text-gray-900">{item.quantity}x</span> {item.item_name}</span>
+                          <span className="text-xs text-gray-400 text-right">(₹{item.estimated_price} / unit) <br/><span className="text-sm font-bold text-gray-900">Total: ₹{item.estimated_price * item.quantity}</span></span>
+                        </li>
+                      ))}
+                    </ul>
                   </div>
-                  <ul className="mt-2 space-y-2">
-                    {p.items.map((item, i) => (
-                      <li key={i} className="text-sm text-gray-600 flex items-center justify-between border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-                        <span><span className="font-black text-gray-900">{item.quantity}x</span> {item.item_name}</span>
-                        <span className="text-xs text-gray-400 text-right">(₹{item.estimated_price} / unit) <br/><span className="text-sm font-bold text-gray-900">Total: ₹{item.estimated_price * item.quantity}</span></span>
-                      </li>
-                    ))}
-                  </ul>
+                  <div className="flex flex-col gap-2 ml-4 shrink-0">
+                    <a href={smartWaLink} target="_blank" className="p-2 bg-green-100 text-green-700 rounded-xl hover:bg-green-200 transition" title={`Message ${p.user_name} on WhatsApp`}>
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 00-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
+                    </a>
+                    <a href={`tel:+91${p.contact_number.replace(/\D/g, '')}`} className="p-2 bg-blue-100 text-blue-700 rounded-xl hover:bg-blue-200 transition" title={`Call ${p.user_name}`}><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg></a>
+                  </div>
                 </div>
-                <div className="flex flex-col gap-2 ml-4 shrink-0">
-                  <a href={`https://wa.me/91${p.contact_number.replace(/\D/g, '')}`} target="_blank" className="p-2 bg-green-100 text-green-700 rounded-xl hover:bg-green-200 transition" title="WhatsApp"><svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 00-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg></a>
-                  <a href={`tel:+91${p.contact_number.replace(/\D/g, '')}`} className="p-2 bg-blue-100 text-blue-700 rounded-xl hover:bg-blue-200 transition" title="Call"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg></a>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
 

@@ -1,5 +1,7 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth'; // 🚨 1. Added GithubAuthProvider here
+import { getFirestore } from 'firebase/firestore';
+import { getMessaging, isSupported } from 'firebase/messaging';
 
 // Your web app's Firebase configuration using Next.js public variables
 const firebaseConfig = {
@@ -18,3 +20,14 @@ const googleProvider = new GoogleAuthProvider();
 const githubProvider = new GithubAuthProvider(); // 🚨 2. Initialized GitHub Provider
 
 export { app, auth, googleProvider, githubProvider }; // 🚨 3. Exported it
+export const db = getFirestore(app);
+
+export const messaging = async () => {
+  if (typeof window !== 'undefined') {
+    const supported = await isSupported();
+    if (supported) {
+      return getMessaging(app);
+    }
+  }
+  return null;
+};

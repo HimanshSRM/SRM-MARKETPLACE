@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from google.cloud import firestore
 
 from app.core.firebase import db
@@ -11,6 +11,8 @@ from app.models.chat import (
     BulkDeletePayload,
     TicketCreate
 )
+# 🚨 IMPORT YOUR NEW NOTIFICATION SERVICE
+from app.services.notifications import send_push_notification
 
 router = APIRouter()
 
@@ -18,7 +20,11 @@ router = APIRouter()
 # 1. INITIATE CHAT (1-on-1 Marketplace)
 # ==========================================
 @router.post("/initiate", tags=["Chat & Bidding"])
-async def initiate_chat(data: ChatInitiate, user: dict = Depends(get_transacting_user)):
+async def initiate_chat(
+    data: ChatInitiate, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    user: dict = Depends(get_transacting_user)
+):
     # 🛡️ Secure: get_transacting_user blocks Guests AND Banned users
     sender_id = user.get("uid")
     if sender_id == data.owner_id:
@@ -72,6 +78,15 @@ async def initiate_chat(data: ChatInitiate, user: dict = Depends(get_transacting
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
+        # 🚨 TRIGGER BACKGROUND NOTIFICATION TO THE SELLER
+        background_tasks.add_task(
+            send_push_notification,
+            user_id=data.owner_id,
+            title="💬 New Conversation Started",
+            body=data.initial_message,
+            url=f"/chat/{room_id}"
+        )
+        
         return {"message": "Message sent successfully!", "room_id": room_id}
 
     except HTTPException:
@@ -79,9 +94,6 @@ async def initiate_chat(data: ChatInitiate, user: dict = Depends(get_transacting
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# ==========================================
-# 2. GET USER INBOX (Includes Group Chats)
-# ==========================================
 # ==========================================
 # 2. GET USER INBOX (Includes Group Chats)
 # ==========================================
@@ -102,7 +114,7 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
         buying_chats = []
         support_tickets = []
         selling_chats = []
-        pool_chats = [] # 🚨 NEW: Dedicated array for Cart Pools
+        pool_chats = [] # Dedicated array for Cart Pools
         
         for doc in buying_query:
             room = {"id": doc.id, "room_id": doc.id, **doc.to_dict()}
@@ -134,7 +146,7 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
             
             # Ensure it's explicitly a group order
             if room.get("type") == "group_order":
-                pool_chats.append(room) # 🚨 Add to dedicated array
+                pool_chats.append(room) # Add to dedicated array
 
         if role == "admin" or email == "himanshyadav202@gmail.com":
             admin_tickets_query = db.collection("chat_rooms").where("seller_id", "==", "ADMIN_TEAM").stream()
@@ -149,7 +161,7 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
         support_tickets.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True)
         pool_chats.sort(key=lambda x: str(x.get("updated_at") or ""), reverse=True) # Sort pools
         
-        # 🚨 Return the new pools array in the response
+        # Return the new pools array in the response
         return {
             "buying": buying_chats, 
             "selling": selling_chats, 
@@ -224,6 +236,7 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
 async def send_message(
     room_id: str, 
     req: dict, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
     user: dict = Depends(get_current_user)
 ):
     try:
@@ -262,11 +275,13 @@ async def send_message(
         user_name = user.get("name", user.get("email", "Campus Member").split("@")[0])    
 
         msg_ref = room_ref.collection("messages").document()
+        msg_text = req.get("text", req.get("content", ""))
+        
         msg_data = {
             "id": msg_ref.id,
             "sender_id": uid,
             "sender_name": user_name,
-            "text": req.get("text", req.get("content", "")),
+            "text": msg_text,
             "is_bid": req.get("is_bid", False),
             "bid_amount": req.get("bid_amount"),
             "created_at": firestore.SERVER_TIMESTAMP,
@@ -288,6 +303,35 @@ async def send_message(
                     update_data["admin_response"] = msg_data["text"]
                 t.reference.update(update_data)
 
+        # 🚨 TRIGGER BACKGROUND NOTIFICATIONS
+        target_uids = []
+        
+        # If it's a Group Order (Cart Pool), notify everyone except the sender
+        if room_data.get("type") == "group_order":
+            participant_ids = room_data.get("participant_ids", [])
+            host_id = room_data.get("host_id")
+            
+            target_uids.extend([p for p in participant_ids if p != uid])
+            if host_id and host_id != uid and host_id not in target_uids:
+                target_uids.append(host_id)
+        else:
+            # If it's a 1-on-1 chat, figure out who the OTHER person is
+            if is_buyer:
+                target_uids.append(room_data.get("seller_id"))
+            else:
+                target_uids.append(room_data.get("buyer_id"))
+                
+        # Fire notifications sequentially in the background
+        for target_id in target_uids:
+            if target_id and target_id != "ADMIN_TEAM":
+                background_tasks.add_task(
+                    send_push_notification,
+                    user_id=target_id,
+                    title=f"💬 {user_name}" if room_data.get("type") == "group_order" else "💬 New Message",
+                    body=msg_text,
+                    url=f"/chat/{room_id}"
+                )
+
         msg_data["created_at"] = "Just now"
         msg_data["timestamp"] = "Just now"
         return msg_data
@@ -302,7 +346,12 @@ async def send_message(
 # 5. ACCEPT BID
 # ==========================================
 @router.post("/{room_id}/messages/{message_id}/accept", tags=["Chat & Bidding"])
-async def accept_bid(room_id: str, message_id: str, user: dict = Depends(get_transacting_user)):
+async def accept_bid(
+    room_id: str, 
+    message_id: str, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    user: dict = Depends(get_transacting_user)
+):
     try:
         uid = user.get("uid")
         room_ref = db.collection("chat_rooms").document(room_id)
@@ -326,6 +375,17 @@ async def accept_bid(room_id: str, message_id: str, user: dict = Depends(get_tra
         
         message_ref = room_ref.collection("messages").document(message_id)
         message_ref.update({"bid_status": BidStatus.ACCEPTED.value})
+        
+        # 🚨 TRIGGER BACKGROUND NOTIFICATION TO THE BUYER
+        buyer_id = room_data.get("buyer_id")
+        if buyer_id:
+            background_tasks.add_task(
+                send_push_notification,
+                user_id=buyer_id,
+                title="🎉 Bid Accepted!",
+                body="The seller accepted your bid! Open the chat to finalize details.",
+                url=f"/chat/{room_id}"
+            )
         
         return {"message": "Bid accepted! The item is now marked as sold.", "listing_id": listing_id}
         

@@ -1,9 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from google.cloud import firestore
 
 from app.core.firebase import db
 from app.core.security import get_current_user, get_admin_user, get_active_user
-from app.models.support import TicketStatus, TicketCreate, AdminTicketReply ,WarnUserRequest
+from app.models.support import TicketStatus, TicketCreate, AdminTicketReply, WarnUserRequest
+# 🚨 IMPORT YOUR NOTIFICATION SERVICE
+from app.services.notifications import send_push_notification
 
 router = APIRouter()
 
@@ -126,7 +128,12 @@ async def get_all_campus_tickets(admin: dict = Depends(get_admin_user)):
 
 
 @router.post("/admin/{ticket_id}/reply", tags=["Support & Admin"])
-async def admin_reply_to_ticket(ticket_id: str, reply: AdminTicketReply, admin: dict = Depends(get_admin_user)):
+async def admin_reply_to_ticket(
+    ticket_id: str, 
+    reply: AdminTicketReply, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    admin: dict = Depends(get_admin_user)
+):
     try:
         admin_id = admin.get("uid")
         ticket_ref = db.collection("tickets").document(ticket_id)
@@ -137,6 +144,7 @@ async def admin_reply_to_ticket(ticket_id: str, reply: AdminTicketReply, admin: 
             
         ticket_data = ticket_doc.to_dict()
         chat_room_id = ticket_data.get("chat_room_id")
+        owner_id = ticket_data.get("owner_id")
         
         # Update the actual Ticket document so the /support page can see it
         ticket_ref.update({
@@ -159,18 +167,37 @@ async def admin_reply_to_ticket(ticket_id: str, reply: AdminTicketReply, admin: 
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        if owner_id:
+            background_tasks.add_task(
+                send_push_notification,
+                user_id=owner_id,
+                title="👨‍💻 Admin Support Reply",
+                body=reply.admin_response,
+                url=f"/chat/{chat_room_id}"
+            )
+        
         return {"message": "Reply sent successfully."}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/admin/{ticket_id}/resolve", tags=["Support & Admin"])
-async def resolve_ticket(ticket_id: str, admin: dict = Depends(get_admin_user)):
+async def resolve_ticket(
+    ticket_id: str, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    admin: dict = Depends(get_admin_user)
+):
     try:
+        target_uid = None
+        chat_room_id = ticket_id
+
         # Check chat_rooms first
         room_ref = db.collection("chat_rooms").document(ticket_id)
+        room_doc = room_ref.get()
         
-        if room_ref.get().exists:
+        if room_doc.exists:
+            target_uid = room_doc.to_dict().get("buyer_id")
             room_ref.update({
                 "status": TicketStatus.RESOLVED.value,
                 "updated_at": firestore.SERVER_TIMESTAMP
@@ -182,11 +209,25 @@ async def resolve_ticket(ticket_id: str, admin: dict = Depends(get_admin_user)):
         else:
             # Fallback if the ID was the ticket ID instead
             ticket_ref = db.collection("tickets").document(ticket_id)
-            if ticket_ref.get().exists:
+            ticket_doc = ticket_ref.get()
+            if ticket_doc.exists:
+                ticket_data = ticket_doc.to_dict()
+                target_uid = ticket_data.get("owner_id")
+                chat_room_id = ticket_data.get("chat_room_id")
                 ticket_ref.update({"status": TicketStatus.RESOLVED.value})
-                chat_id = ticket_ref.get().to_dict().get("chat_room_id")
-                if chat_id:
-                    db.collection("chat_rooms").document(chat_id).update({"status": TicketStatus.RESOLVED.value})
+                
+                if chat_room_id:
+                    db.collection("chat_rooms").document(chat_room_id).update({"status": TicketStatus.RESOLVED.value})
+
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        if target_uid and chat_room_id:
+            background_tasks.add_task(
+                send_push_notification,
+                user_id=target_uid,
+                title="✅ Ticket Resolved",
+                body="An admin has resolved and closed your support ticket.",
+                url=f"/chat/{chat_room_id}"
+            )
 
         return {"message": "Ticket resolved and closed."}
     except Exception as e:
@@ -194,7 +235,12 @@ async def resolve_ticket(ticket_id: str, admin: dict = Depends(get_admin_user)):
     
 
 @router.post("/admin/warn/{target_uid}", tags=["Support & Admin"])
-async def warn_user(target_uid: str, req: WarnUserRequest, admin: dict = Depends(get_admin_user)):
+async def warn_user(
+    target_uid: str, 
+    req: WarnUserRequest, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    admin: dict = Depends(get_admin_user)
+):
     """Admin initiates a Warning ticket directly into a user's inbox."""
     try:
         # 1. Create the Chat Room
@@ -220,6 +266,15 @@ async def warn_user(target_uid: str, req: WarnUserRequest, admin: dict = Depends
             "is_bid": False,
             "created_at": firestore.SERVER_TIMESTAMP 
         })
+
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        background_tasks.add_task(
+            send_push_notification,
+            user_id=target_uid,
+            title=f"⚠️ Official Action: {req.subject}",
+            body=req.message,
+            url=f"/chat/{chat_room_id}"
+        )
 
         return {"message": "Warning sent to user.", "chat_room_id": chat_room_id}
     except Exception as e:

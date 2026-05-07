@@ -2,8 +2,11 @@ import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/context/AuthContext';
-import Navbar from '@/components/Navbar'; // 🚨 IMPORT NAVBAR HERE
 import { NotificationProvider } from '@/context/NotificationContext';
+import Navbar from '@/components/Navbar'; 
+
+// 🚨 IMPORTED THE PERMISSION BANNER HERE
+import NotificationPrompt from '@/components/NotificationPrompt'; 
 
 const inter = Inter({ subsets: ['latin'] });
 
@@ -22,13 +25,17 @@ export default function RootLayout({
       <body className={inter.className}>
         <AuthProvider>
           
-          <NotificationProvider> {/* 🚨 NotificationProvider wraps EVERYTHING */}
+          {/* 🚨 NotificationProvider wraps EVERYTHING so alerts work globally */}
+          <NotificationProvider> 
             
-            <Navbar /> {/* 🚨 Navbar is now INSIDE, so it can hear the unread count! */}
+            <Navbar /> {/* Navbar is inside so it can hear the unread count! */}
             
             <main>
               {children}
             </main>
+            
+            {/* 🚨 THE PERMISSION BANNER! It stays hidden unless the user hasn't granted permissions yet */}
+            <NotificationPrompt />
             
           </NotificationProvider>
 

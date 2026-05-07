@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime, timedelta, timezone
@@ -7,6 +7,7 @@ from google.cloud.firestore import ArrayUnion, ArrayRemove
 
 from app.core.security import get_current_user
 from app.core.firebase import db
+from app.services.notifications import send_push_notification
 
 router = APIRouter()
 
@@ -25,7 +26,7 @@ class PoolItem(BaseModel):
 
 class PoolJoin(BaseModel):
     contact_number: str
-    block:str = ""
+    block: str = ""
     items: List[PoolItem]
 
 class PoolStatusUpdate(BaseModel):
@@ -109,7 +110,12 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
 
 
 @router.post("/{pool_id}/join")
-async def join_group_order(pool_id: str, payload: PoolJoin, current_user: dict = Depends(get_current_user)):
+async def join_group_order(
+    pool_id: str, 
+    payload: PoolJoin, 
+    background_tasks: BackgroundTasks, 
+    current_user: dict = Depends(get_current_user)
+):
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
@@ -145,13 +151,28 @@ async def join_group_order(pool_id: str, payload: PoolJoin, current_user: dict =
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
+        # 🚨 TRIGGER BACKGROUND NOTIFICATION TO THE HOST
+        if pool.get("host_id") and pool["host_id"] != current_user["uid"]:
+            background_tasks.add_task(
+                send_push_notification,
+                user_id=pool["host_id"],
+                title=f"🛒 Someone joined your {pool['app_name']} pool!",
+                body=f"{user_name} added items worth ₹{total_price} to your order list.",
+                url=f"/chat/{pool['chat_room_id']}"
+            )
+
         return {"message": "Joined successfully!"}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/{pool_id}/status")
-async def update_pool_status(pool_id: str, payload: PoolStatusUpdate, current_user: dict = Depends(get_current_user)):
+async def update_pool_status(
+    pool_id: str, 
+    payload: PoolStatusUpdate, 
+    background_tasks: BackgroundTasks, 
+    current_user: dict = Depends(get_current_user)
+):
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
@@ -169,19 +190,29 @@ async def update_pool_status(pool_id: str, payload: PoolStatusUpdate, current_us
         # Send Automated Bot Message
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         system_text = ""
+        push_title = ""
+        push_body = ""
         
         if payload.status == "locked": 
             fee_text = f" (Delivery Fee: ₹{payload.delivery_fee})" if payload.delivery_fee > 0 else ""
             system_text = f"🔒 Order Locked! The Host is placing the order now.{fee_text}"
+            push_title = f"🔒 {pool['app_name']} Pool Locked!"
+            push_body = f"The host is checking out your cart items now.{fee_text}"
+            
         elif payload.status == "delivered": 
             system_text = f"🛎️ ORDER ARRIVED! Meet at {pool['pickup_location']}."
+            push_title = f"🛎️ {pool['app_name']} Order Has Arrived!"
+            push_body = f"Please collect your items immediately from {pool['pickup_location']}."
+            
         elif payload.status == "cancelled": 
             system_text = "❌ The Host has cancelled this group order."
-            # 🚨 THE SELF-DESTRUCT TIMER (24 Hours from now)
+            push_title = f"❌ {pool['app_name']} Pool Cancelled"
+            push_body = "The host has closed this pool. Your item requests have been cancelled."
+            # THE SELF-DESTRUCT TIMER (24 Hours from now)
             delete_at = datetime.now(timezone.utc) + timedelta(hours=24)
             update_data["delete_at"] = delete_at    
 
-        # 🚨 Write updates to database
+        # Write updates to database
         pool_ref.update(update_data)    
 
         if system_text:
@@ -191,12 +222,30 @@ async def update_pool_status(pool_id: str, payload: PoolStatusUpdate, current_us
             })
             chat_ref.update({"last_message": system_text, "updated_at": datetime.now(timezone.utc).isoformat()})
 
+        # 🚨 TRIGGER ALERTS TO ALL JOINERS IN THE BACKGROUND
+        participant_ids = pool.get("participant_ids", [])
+        if participant_ids and push_title:
+            for uid in participant_ids:
+                if uid != current_user["uid"]: # Don't notify the host themselves
+                    background_tasks.add_task(
+                        send_push_notification,
+                        user_id=uid,
+                        title=push_title,
+                        body=push_body,
+                        url=f"/chat/{pool['chat_room_id']}"
+                    )
+
         return {"status": payload.status}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/{pool_id}/participants/{user_id}")
-async def kick_participant(pool_id: str, user_id: str, current_user: dict = Depends(get_current_user)):
+async def kick_participant(
+    pool_id: str, 
+    user_id: str, 
+    background_tasks: BackgroundTasks, 
+    current_user: dict = Depends(get_current_user)
+):
     """Allows the Host to remove a user from an open group order."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
@@ -245,6 +294,15 @@ async def kick_participant(pool_id: str, user_id: str, current_user: dict = Depe
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
+        # 🚨 TRIGGER BACKGROUND ALERT TO THE KICKED USER
+        background_tasks.add_task(
+            send_push_notification,
+            user_id=user_id,
+            title=f"🚫 Removed from {pool['app_name']} Pool",
+            body="The host has removed you from the active cart order list.",
+            url="/inbox" 
+        )
+
         return {"message": f"Successfully removed {kicked_user['user_name']}"}
 
     except HTTPException:
@@ -254,7 +312,11 @@ async def kick_participant(pool_id: str, user_id: str, current_user: dict = Depe
 
 
 @router.post("/{pool_id}/settle")
-async def settle_group_order(pool_id: str, current_user: dict = Depends(get_current_user)):
+async def settle_group_order(
+    pool_id: str, 
+    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    current_user: dict = Depends(get_current_user)
+):
     """Closes the order and archives it (Simplified logic)."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
@@ -283,6 +345,19 @@ async def settle_group_order(pool_id: str, current_user: dict = Depends(get_curr
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
+
+        # 🚨 TRIGGER FINAL BACKGROUND ALERT TO ALL PARTICIPANTS
+        participant_ids = pool.get("participant_ids", [])
+        if participant_ids:
+            for uid in participant_ids:
+                if uid != current_user["uid"]: 
+                    background_tasks.add_task(
+                        send_push_notification,
+                        user_id=uid,
+                        title=f"✅ {pool['app_name']} Pool Settled",
+                        body="The host has officially closed the order. Thanks for pooling!",
+                        url="/inbox"
+                    )
 
         return {"message": "Order settled successfully."}
     except HTTPException: raise
