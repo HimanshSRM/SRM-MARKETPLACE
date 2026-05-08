@@ -1,30 +1,35 @@
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
 import { AuthProvider } from '@/context/AuthContext';
 import { NotificationProvider } from '@/context/NotificationContext';
 import Navbar from '@/components/Navbar'; 
-
-// 🚨 IMPORTED THE PERMISSION BANNER HERE
 import NotificationPrompt from '@/components/NotificationPrompt'; 
 
 const inter = Inter({ subsets: ['latin'] });
 
-// 🚨 THE SEO UPGRADE: This is what Google reads to rank your website!
+// 🚨 PWA UPGRADE: Next.js 14+ expects themeColor here instead of in metadata
+export const viewport: Viewport = {
+  themeColor: '#ffffff',
+};
+
+// 🚨 THE SEO & PWA UPGRADE: This is what Google and Mobile phones read!
 export const metadata: Metadata = {
   title: 'SRM Marketplace | Buy, Sell & Cart Pool on Campus',
   description: 'The official student marketplace for SRM Institute of Science and Technology. Buy used books, sell electronics, find tech repairs, and split delivery fees with Cart Pooling.',
   keywords: ['SRMIST', 'SRM Marketplace', 'SRM University', 'buy used books SRM', 'cart pool SRM', 'student marketplace', 'TechFix SRM'],
+  manifest: '/manifest.json', // 📱 Links your PWA manifest for Android/Chrome
+  appleWebApp: {              // 🍎 Tells iPhones how to display the installed app
+    capable: true,
+    statusBarStyle: 'default',
+    title: 'SRM Market',
+  },
   openGraph: {
     title: 'SRM Marketplace',
     description: 'The premier student marketplace for the SRM campus.',
-    url: 'https://srm-marketplace.vercel.app', // Update this if you buy a custom domain later!
+    url: 'https://srm-marketplace-webapp.vercel.app/', // Update this if you buy a custom domain later!
     siteName: 'SRM Marketplace',
     type: 'website',
-  },
-  verification: {
-    // 🚨 PASTE YOUR CODE HERE: Go to Google Search Console -> HTML Tag method -> copy the string inside the content="THIS_STRING" part.
-    google: 'google2426312a7875dd40.html', 
   },
 };
 
