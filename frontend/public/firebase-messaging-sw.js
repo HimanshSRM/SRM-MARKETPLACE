@@ -20,8 +20,8 @@ messaging.onBackgroundMessage((payload) => {
   const notificationTitle = payload.notification.title;
   const notificationOptions = {
     body: payload.notification.body,
-    icon: '/favicon.ico', // Make sure you have a favicon or logo here!
-    badge: '/favicon.ico',
+    icon: '/icon.png', // Make sure you have a favicon or logo here!
+    badge: '/icon.png',
     data: payload.data
   };
 
