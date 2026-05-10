@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState } from 'react';
-import { auth } from '@/lib/firebase';
 import { updateMyListing } from '@/lib/api';
 import toast from 'react-hot-toast';
 
@@ -22,16 +21,14 @@ export default function EditListingModal({ listing, onClose, onSuccess }: EditLi
     setIsSubmitting(true);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
       const updatedData = {
         title,
         price: parseFloat(price),
         description,
       };
 
-      await updateMyListing(token, listing.id, updatedData);
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      await updateMyListing(listing.id, updatedData);
       
       toast.success("Listing updated successfully!");
       // Merge the new data with the old listing so the UI updates instantly

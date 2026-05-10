@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { 
   getLiveShops, 
   getShopCatalog, 
@@ -31,10 +30,8 @@ function EditShopModal({ currentShop, onClose, onRefresh }: { currentShop: any, 
     e.preventDefault();
     setIsSaving(true);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      await updateShopProfile(token, currentShop.id, formData);
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      await updateShopProfile(currentShop.id, formData);
       
       alert("Shop profile updated successfully! 🎉");
       onRefresh(); 
@@ -145,15 +142,14 @@ export default function ShopDashboardPage() {
 
     try {
       setIsLoading(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("Authentication error");
       
-      const allShops = await getLiveShops(token);
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      const allShops = await getLiveShops();
       const userShop = allShops.find(s => s.owner_id === profile.uid);
       
       if (userShop) {
         setMyShop(userShop);
-        const shopCatalog = await getShopCatalog(token, userShop.id);
+        const shopCatalog = await getShopCatalog(userShop.id);
         setCatalog(shopCatalog);
       }
     } catch (error) {
@@ -189,8 +185,6 @@ export default function ShopDashboardPage() {
 
     try {
       setIsSubmitting(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("Authentication error");
 
       const payload = {
         name: formData.name, 
@@ -201,13 +195,15 @@ export default function ShopDashboardPage() {
       };
 
       if (editingItemId) {
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
         // Optimistic Update for Edit
-        await updateCatalogItem(token, editingItemId, payload);
+        await updateCatalogItem(editingItemId, payload);
         setCatalog(catalog.map(item => 
           item.id === editingItemId ? { ...item, ...payload } : item
         ));
       } else {
-        const response : any = await addCatalogItem(token, payload);
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        const response : any = await addCatalogItem(payload);
         const newItem = {
           id: response.item_id || response.id || Date.now().toString(), 
           ...payload
@@ -227,10 +223,8 @@ export default function ShopDashboardPage() {
     if (!window.confirm("Are you sure you want to delete this item? This action cannot be undone.")) return;
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("Authentication error");
-
-      await deleteCatalogItem(token, itemId);
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      await deleteCatalogItem(itemId);
       setCatalog(catalog.filter(item => item.id !== itemId));
       
       if (editingItemId === itemId) {

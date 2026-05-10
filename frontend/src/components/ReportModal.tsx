@@ -1,7 +1,6 @@
 'use client';
 
 import React, { useState } from 'react';
-import { auth } from '@/lib/firebase';
 import { reportListing, reportShopItem } from '@/lib/api'; // 🚨 IMPORTED BOTH
 import toast from 'react-hot-toast';
 
@@ -22,17 +21,13 @@ export default function ReportModal({ listingId, listingTitle, shopId, onClose }
     setIsSubmitting(true);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) {
-        toast.error("You must be logged in to report.");
-        return;
-      }
-
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      
       // 🚨 THE SMART LOGIC: Choose the right API
       if (shopId) {
-        await reportShopItem(token, shopId, listingId, reason, details);
+        await reportShopItem(shopId, listingId, reason, details);
       } else {
-        await reportListing(token, listingId, reason, details);
+        await reportListing(listingId, reason, details);
       }
       
       toast.success("Report submitted. Our team is reviewing it.", { icon: '🚩' });

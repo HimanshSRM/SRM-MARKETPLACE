@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { createProduct, CreateProductPayload } from '@/lib/api';
 
 const CATEGORY_MAP = {
@@ -73,18 +72,16 @@ export default function CreateProductPage() {
     setIsSubmitting(true);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("Authentication lost. Please log in again.");
-
       const payload: CreateProductPayload = {
         title: formData.title,
         description: formData.description,
         price: parseFloat(formData.price),
-        type: formData.type,         
+        type: formData.type,        
         category: formData.category, 
       };
 
-      await createProduct(token, payload);
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      await createProduct(payload);
       router.push('/'); 
     } catch (err: any) {
       console.error(err);

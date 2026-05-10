@@ -2,7 +2,8 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import GuestBlockerModal from '@/components/GuestBlockerModal';
-import { onAuthStateChanged } from 'firebase/auth';
+// 🚨 THE FIX: Swapped onAuthStateChanged for onIdTokenChanged
+import { onIdTokenChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase'; 
 import { syncUserWithBackend } from '@/lib/api'; 
 
@@ -34,16 +35,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     console.log("Setting up Firebase listener...");
     
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    // 🚨 THE FIX: onIdTokenChanged automatically fires when a token is refreshed in the background!
+    const unsubscribe = onIdTokenChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         console.log("Firebase found a saved user session! Fetching backend data...");
         
+        document.cookie = "client_auth_sync=true; path=/; max-age=86400; SameSite=Strict";
+
         try {
-          // 1. Get the secure token from Firebase
-          const token = await firebaseUser.getIdToken();
-          
-          // 2. Ask your FastAPI backend for this user's real role
-          const data = await syncUserWithBackend(token);
+          // 🚨 THE FIX: No need to grab the token manually! api.ts handles it automatically now.
+          // Ask your FastAPI backend for this user's real role
+          const data = await syncUserWithBackend();
           
           if (data && data.profile) {
             // 🚨 READ-ONLY BAN: Let them stay logged in, but lock their role to 'banned'
@@ -51,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
               console.log("User is banned. Entering read-only mode.");
               setProfile({ ...data.profile, role: 'banned' });
             } else {
-              // 3. Save the REAL profile into your global state if they aren't banned
+              // Save the REAL profile into your global state if they aren't banned
               setProfile(data.profile);
             }
           } else {
@@ -61,7 +63,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
         } catch (error) {
           console.error("🚨 CRITICAL BACKEND SYNC ERROR:", error);
-          // 🚨 THE FIX: Do NOT setProfile(null) here! 
           // If Firebase says they are logged in, keep them logged in locally as a guest.
           // This prevents the violent redirect to /login on page reloads if the API glitches.
           setProfile({ uid: firebaseUser.uid, role: 'guest', email: firebaseUser.email || undefined }); 
@@ -69,6 +70,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         
       } else {
         console.log("No user session found.");
+        document.cookie = "client_auth_sync=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; SameSite=Strict";
         setProfile(null);
       }
       

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from typing import List
 from datetime import datetime, timedelta, timezone
@@ -7,7 +7,6 @@ from google.cloud.firestore import ArrayUnion, ArrayRemove
 
 from app.core.security import get_current_user
 from app.core.firebase import db
-from app.services.notifications import send_push_notification
 
 router = APIRouter()
 
@@ -113,7 +112,7 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
 async def join_group_order(
     pool_id: str, 
     payload: PoolJoin, 
-    background_tasks: BackgroundTasks, 
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -151,14 +150,14 @@ async def join_group_order(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER BACKGROUND NOTIFICATION TO THE HOST
+        # 🚨 TRIGGER REDIS BACKGROUND NOTIFICATION TO THE HOST
         if pool.get("host_id") and pool["host_id"] != current_user["uid"]:
-            background_tasks.add_task(
-                send_push_notification,
-                user_id=pool["host_id"],
-                title=f"🛒 Someone joined your {pool['app_name']} pool!",
-                body=f"{user_name} added items worth ₹{total_price} to your order list.",
-                url=f"/chat/{pool['chat_room_id']}"
+            await request.app.state.redis.enqueue_job(
+                'process_push_notification',
+                pool["host_id"], # user_id
+                f"🛒 Someone joined your {pool['app_name']} pool!", # title
+                f"{user_name} added items worth ₹{total_price} to your order list.", # body
+                f"/chat/{pool['chat_room_id']}" # url
             )
 
         return {"message": "Joined successfully!"}
@@ -170,7 +169,7 @@ async def join_group_order(
 async def update_pool_status(
     pool_id: str, 
     payload: PoolStatusUpdate, 
-    background_tasks: BackgroundTasks, 
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -222,17 +221,17 @@ async def update_pool_status(
             })
             chat_ref.update({"last_message": system_text, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER ALERTS TO ALL JOINERS IN THE BACKGROUND
+        # 🚨 TRIGGER REDIS ALERTS TO ALL JOINERS IN THE BACKGROUND
         participant_ids = pool.get("participant_ids", [])
         if participant_ids and push_title:
             for uid in participant_ids:
                 if uid != current_user["uid"]: # Don't notify the host themselves
-                    background_tasks.add_task(
-                        send_push_notification,
-                        user_id=uid,
-                        title=push_title,
-                        body=push_body,
-                        url=f"/chat/{pool['chat_room_id']}"
+                    await request.app.state.redis.enqueue_job(
+                        'process_push_notification',
+                        uid,
+                        push_title,
+                        push_body,
+                        f"/chat/{pool['chat_room_id']}"
                     )
 
         return {"status": payload.status}
@@ -243,7 +242,7 @@ async def update_pool_status(
 async def kick_participant(
     pool_id: str, 
     user_id: str, 
-    background_tasks: BackgroundTasks, 
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     current_user: dict = Depends(get_current_user)
 ):
     """Allows the Host to remove a user from an open group order."""
@@ -294,13 +293,13 @@ async def kick_participant(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER BACKGROUND ALERT TO THE KICKED USER
-        background_tasks.add_task(
-            send_push_notification,
-            user_id=user_id,
-            title=f"🚫 Removed from {pool['app_name']} Pool",
-            body="The host has removed you from the active cart order list.",
-            url="/inbox" 
+        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO THE KICKED USER
+        await request.app.state.redis.enqueue_job(
+            'process_push_notification',
+            user_id,
+            f"🚫 Removed from {pool['app_name']} Pool",
+            "The host has removed you from the active cart order list.",
+            "/inbox"
         )
 
         return {"message": f"Successfully removed {kicked_user['user_name']}"}
@@ -314,7 +313,7 @@ async def kick_participant(
 @router.post("/{pool_id}/settle")
 async def settle_group_order(
     pool_id: str, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     current_user: dict = Depends(get_current_user)
 ):
     """Closes the order and archives it (Simplified logic)."""
@@ -346,17 +345,17 @@ async def settle_group_order(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER FINAL BACKGROUND ALERT TO ALL PARTICIPANTS
+        # 🚨 TRIGGER FINAL REDIS BACKGROUND ALERT TO ALL PARTICIPANTS
         participant_ids = pool.get("participant_ids", [])
         if participant_ids:
             for uid in participant_ids:
                 if uid != current_user["uid"]: 
-                    background_tasks.add_task(
-                        send_push_notification,
-                        user_id=uid,
-                        title=f"✅ {pool['app_name']} Pool Settled",
-                        body="The host has officially closed the order. Thanks for pooling!",
-                        url="/inbox"
+                    await request.app.state.redis.enqueue_job(
+                        'process_push_notification',
+                        uid,
+                        f"✅ {pool['app_name']} Pool Settled",
+                        "The host has officially closed the order. Thanks for pooling!",
+                        "/inbox"
                     )
 
         return {"message": "Order settled successfully."}

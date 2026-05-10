@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { sendStudentOtp, verifyStudentOtp } from '@/lib/api';
 
 export default function VerifyStudentPage() {
@@ -47,10 +46,8 @@ export default function VerifyStudentPage() {
 
     try {
       setIsLoading(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error('Authentication lost. Please log in again.');
-
-      await sendStudentOtp(token, email);
+      // 🚨 CLEANUP: No need to grab the token manually, api.ts handles it!
+      await sendStudentOtp(email);
       setStep(2); // Move to OTP step
     } catch (err: any) {
       setError(err.message || 'Could not send OTP. Please try again.');
@@ -70,11 +67,10 @@ export default function VerifyStudentPage() {
 
     try {
       setIsLoading(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error('Authentication lost. Please log in again.');
-
+      // 🚨 CLEANUP: No need to grab the token manually, api.ts handles it!
+      
       // Call the verification endpoint
-      await verifyStudentOtp(token, email, otp);
+      await verifyStudentOtp(email, otp);
 
       // Upgrade the local context state immediately
       if (profile) {

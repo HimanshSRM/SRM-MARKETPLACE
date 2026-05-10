@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { getInbox, createSupportTicket } from '@/lib/api';
 
 export default function SupportPage() {
@@ -30,10 +29,8 @@ export default function SupportPage() {
 
       try {
         setIsLoading(true);
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
-
-        const inbox = await getInbox(token);
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        const inbox = await getInbox();
         // We only care about support tickets here!
         setTickets(inbox.support || []);
       } catch (error) {
@@ -52,10 +49,9 @@ export default function SupportPage() {
 
     try {
       setIsSubmitting(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
 
-      const response = await createSupportTicket(token, { subject, message });
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      const response = await createSupportTicket({ subject, message });
       
       setIsModalOpen(false);
       router.push(`/chat/${response.ticket_id}`);

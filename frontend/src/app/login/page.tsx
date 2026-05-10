@@ -5,8 +5,7 @@ import { useRouter } from 'next/navigation';
 import { 
   signInWithPopup, 
   signInWithEmailAndPassword, 
-  createUserWithEmailAndPassword,
-  User
+  createUserWithEmailAndPassword
 } from 'firebase/auth';
 import { auth, googleProvider, githubProvider } from '@/lib/firebase';
 import { syncUserWithBackend } from '@/lib/api';
@@ -35,17 +34,17 @@ export default function LoginPage() {
 
   // --- CORE SYNC & ROUTING LOGIC ---
   // We reuse this exact flow whether they use Google, GitHub, or Email
-  const handleBackendSyncAndRoute = async (user: User) => {
-    // 1. Get the secure ID token
-    const token = await user.getIdToken();
+  const handleBackendSyncAndRoute = async () => {
+    // 🚨 CLEANUP: No manual token fetching needed! 
+    // The Firebase auth singleton is already updated, so api.ts handles it securely.
 
-    // 2. Sync with FastAPI Backend
-    const data = await syncUserWithBackend(token);
+    // 1. Sync with FastAPI Backend
+    const data = await syncUserWithBackend();
     
-    // 3. Update global state
+    // 2. Update global state
     setProfile(data.profile);
 
-    // 4. Route based on backend instruction (Progressive Onboarding)
+    // 3. Route based on backend instruction (Progressive Onboarding)
     switch (data.next_step) {
       case 'dashboard':
         router.push('/'); // Live feed
@@ -69,8 +68,8 @@ export default function LoginPage() {
     try {
       setIsAuthenticating(true);
       setError(null);
-      const userCredential = await signInWithPopup(auth, googleProvider);
-      await handleBackendSyncAndRoute(userCredential.user);
+      await signInWithPopup(auth, googleProvider);
+      await handleBackendSyncAndRoute();
     } catch (err: any) {
       console.error(err);
       setError('Failed to sign in with Google.');
@@ -82,8 +81,8 @@ export default function LoginPage() {
     try {
       setIsAuthenticating(true);
       setError(null);
-      const userCredential = await signInWithPopup(auth, githubProvider);
-      await handleBackendSyncAndRoute(userCredential.user);
+      await signInWithPopup(auth, githubProvider);
+      await handleBackendSyncAndRoute();
     } catch (err: any) {
       console.error(err);
       setError('Failed to sign in with GitHub.');
@@ -103,14 +102,13 @@ export default function LoginPage() {
       setIsAuthenticating(true);
       setError(null);
 
-      let userCredential;
       if (isSignUp) {
-        userCredential = await createUserWithEmailAndPassword(auth, email, password);
+        await createUserWithEmailAndPassword(auth, email, password);
       } else {
-        userCredential = await signInWithEmailAndPassword(auth, email, password);
+        await signInWithEmailAndPassword(auth, email, password);
       }
       
-      await handleBackendSyncAndRoute(userCredential.user);
+      await handleBackendSyncAndRoute();
     } catch (err: any) {
       console.error(err);
       // Clean, user-friendly Firebase error messages

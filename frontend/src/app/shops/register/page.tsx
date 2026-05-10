@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { createShopProfile, checkMyShop, restoreShopProfile } from '@/lib/api'; 
 
 export default function ShopRegistrationPage() {
@@ -60,10 +59,8 @@ export default function ShopRegistrationPage() {
       }
 
       try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
-        
-        const check = await checkMyShop(token);
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        const check = await checkMyShop();
         if (check.has_shop) {
           setPreviousShop(check.shop_data);
         }
@@ -87,11 +84,9 @@ export default function ShopRegistrationPage() {
     setError(null);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("You must be logged in.");
-
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
       // This is now ONLY called when starting fresh (or first time)
-      await createShopProfile(token, formData, isOverwriting);
+      await createShopProfile(formData, isOverwriting);
       
       // SMART ROLE HANDLING: Only demote if they were a shop starting completely over
       if (profile) {
@@ -119,10 +114,8 @@ export default function ShopRegistrationPage() {
     setIsSubmitting(true);
     setError(null);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("You must be logged in.");
-
-      await restoreShopProfile(token); // Calls the safe backend route
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      await restoreShopProfile(); // Calls the safe backend route
 
       // SMART ROLE HANDLING: Safely demote them to guest if they were a verified shop awaiting re-approval
       if (profile) {

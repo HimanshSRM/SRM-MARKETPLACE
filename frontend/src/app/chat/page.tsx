@@ -4,7 +4,6 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
 import { getInbox, hideChatRoom } from '@/lib/api';
-import { auth } from '@/lib/firebase';
 import Link from 'next/link';
 
 interface InboxData {
@@ -51,10 +50,9 @@ export default function InboxPage() {
 
     const fetchInbox = async () => {
       try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
-
-        const data = await getInbox(token);
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        const data = await getInbox();
+        
         setInboxData({
           buying: data.buying || [],
           selling: data.selling || [],
@@ -98,10 +96,8 @@ export default function InboxPage() {
     if (!window.confirm("Remove this conversation from your inbox?")) return;
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      await hideChatRoom(token, roomId);
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      await hideChatRoom(roomId);
 
       setInboxData(prev => ({
         ...prev,

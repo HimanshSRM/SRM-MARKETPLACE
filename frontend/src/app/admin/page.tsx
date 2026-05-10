@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { 
   getPendingShops, verifyShop, rejectShop, Shop,
   setUserRole,
@@ -87,17 +86,16 @@ export default function AdminDashboardPage() {
 
       try {
         setIsDataLoading(true);
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
-
+        
+        // 🚨 CLEANUP: API wrapper handles the token!
         if (activeTab === 'shops') {
-          const shops = await getPendingShops(token);
+          const shops = await getPendingShops();
           setPendingShops(shops);
         } else if (activeTab === 'support') {
-          const allTickets = await getAllSupportTickets(token);
+          const allTickets = await getAllSupportTickets();
           setTickets(allTickets);
         } else if (activeTab === 'users') { 
-          const usersList = await getAllUsers(token);
+          const usersList = await getAllUsers();
           setAllUsers(usersList);
         }
       } catch (error) {
@@ -113,9 +111,8 @@ export default function AdminDashboardPage() {
   const handleVerify = async (shopId: string) => {
     if (!window.confirm("Approve this shop to go live?")) return;
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      await verifyShop(token, shopId);
+      // 🚨 CLEANUP: API wrapper handles the token!
+      await verifyShop(shopId);
       setPendingShops(pendingShops.filter(s => s.id !== shopId));
     } catch (error) { alert("Failed to verify shop."); }
   };
@@ -124,9 +121,8 @@ export default function AdminDashboardPage() {
     const reason = window.prompt("Reason for rejection:");
     if (!reason) return;
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      await rejectShop(token, shopId, reason);
+      // 🚨 CLEANUP: API wrapper handles the token!
+      await rejectShop(shopId, reason);
       setPendingShops(pendingShops.filter(s => s.id !== shopId));
     } catch (error) { alert("Failed to reject shop."); }
   };
@@ -137,10 +133,8 @@ export default function AdminDashboardPage() {
     
     try {
       setIsWarning(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      
-      await moderateUser(token, selectedUser.uid, 'restore', 'Quick Unban via Directory', 'QUICK_ACTION_LOG');
+      // 🚨 CLEANUP: API wrapper handles the token!
+      await moderateUser(selectedUser.uid, 'restore', 'Quick Unban via Directory', 'QUICK_ACTION_LOG');
       
       alert(`${selectedUser.email} has been unbanned!`);
       setSelectedUser({ ...selectedUser, role: 'student', status: 'active' });
@@ -420,9 +414,8 @@ export default function AdminDashboardPage() {
                       </select>
                       <button onClick={async () => {
                         try {
-                          const token = await auth.currentUser?.getIdToken();
-                          if (!token) return;
-                          await setUserRole(token, selectedUser.uid, newRole);
+                          // 🚨 CLEANUP: API wrapper handles the token!
+                          await setUserRole(selectedUser.uid, newRole);
                           alert(`Role updated to ${newRole}!`);
                           setSelectedUser({ ...selectedUser, role: newRole });
                           setAllUsers(allUsers.map(u => u.uid === selectedUser.uid ? { ...u, role: newRole } : u));
@@ -442,9 +435,8 @@ export default function AdminDashboardPage() {
                       if (!window.confirm(`Open an official warning thread with ${selectedUser.email}?`)) return;
                       try {
                         setIsWarning(true);
-                        const token = await auth.currentUser?.getIdToken();
-                        if (!token) return;
-                        const response = await warnUser(token, selectedUser.uid, warnSubject, warnMessage);
+                        // 🚨 CLEANUP: API wrapper handles the token!
+                        const response = await warnUser(selectedUser.uid, warnSubject, warnMessage);
                         setWarnMessage(''); 
                         setWarnSubject('⚠️ Official Warning: Policy Violation');
                         if (response.room_id) router.push(`/chat/${response.room_id}`);

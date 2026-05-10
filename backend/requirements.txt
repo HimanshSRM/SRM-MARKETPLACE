@@ -14,3 +14,10 @@ python-dotenv==1.0.1
 # Error Monitoring (Optional but recommended in your README)
 sentry-sdk
 requests
+
+
+redis==5.3.1
+arq==0.28.0
+
+hiredis==3.3.1
+async-timeout==5.0.1

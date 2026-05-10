@@ -4,7 +4,6 @@ import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
 import { getLiveProducts, Product, initiateChat } from '@/lib/api';
-import { auth } from '@/lib/firebase';
 import ReportModal from '@/components/ReportModal';
 import GroupOrdersTab from '@/components/GroupOrdersTab';
 
@@ -75,10 +74,8 @@ export default function HomePage() {
   // 🌟 FETCH LOGIC
   const fetchProducts = async (cursor = '', category = '', reset = false) => {
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      const response = await getLiveProducts(token, 15, cursor, category === 'all' ? '' : category);
+      // 🚨 CLEANUP: Removed the manual token generation. api.ts handles it securely!
+      const response = await getLiveProducts(15, cursor, category === 'all' ? '' : category);
       
       if (reset) {
         setProducts(response.data);
@@ -133,9 +130,7 @@ export default function HomePage() {
     }
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error("Please log in again.");
-
+      // 🚨 CLEANUP: Removed the manual token generation here too!
       const ownerId = product.owner_id || product.seller_id || product.user_id || product.creator_id;
 
       if (!ownerId) {
@@ -144,7 +139,7 @@ export default function HomePage() {
       }
 
       const initialMessage = `Hi! I saw your listing for "${product.title}". Is this still available?`;
-      const room = await initiateChat(token, product.id, ownerId, initialMessage);
+      const room = await initiateChat(product.id, ownerId, initialMessage);
       const roomId = room.id || room.room_id; 
       
       router.push(`/chat/${roomId}`); 

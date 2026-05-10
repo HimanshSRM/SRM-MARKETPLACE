@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from google.cloud import firestore
 from datetime import datetime, timedelta, timezone
 from firebase_admin import auth
@@ -24,7 +24,11 @@ async def get_pending_shops(admin: dict = Depends(get_admin_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/shops/{shop_id}/verify", tags=["Admin - Shops"])
-async def verify_shop(shop_id: str, admin: dict = Depends(get_admin_user)):
+async def verify_shop(
+    shop_id: str, 
+    request: Request, # 🚨 Added Request for Redis
+    admin: dict = Depends(get_admin_user)
+):
     """Approves a shop and updates the user's official role."""
     try:
         shop_ref = db.collection("shops").document(shop_id)
@@ -42,12 +46,26 @@ async def verify_shop(shop_id: str, admin: dict = Depends(get_admin_user)):
         if user_ref.get().exists:
             user_ref.update({"role": "shop_verified"})
             
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        await request.app.state.redis.enqueue_job(
+            'process_push_notification',
+            shop_id,
+            "🏪 Shop Approved!",
+            "Congratulations! Your shop application has been verified by the admin team.",
+            "/dashboard"
+        )
+            
         return {"message": f"Shop {shop_id} officially verified and user promoted!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.put("/shops/{shop_id}/reject", tags=["Admin - Shops"])
-async def reject_shop(shop_id: str, request: RejectRequest, admin: dict = Depends(get_admin_user)):
+async def reject_shop(
+    shop_id: str, 
+    payload: RejectRequest, 
+    request: Request, # 🚨 Added Request for Redis
+    admin: dict = Depends(get_admin_user)
+):
     """Rejects a shop application, demotes the user to guest, and opens an appeal ticket."""
     try:
         shop_ref = db.collection("shops").document(shop_id)
@@ -65,7 +83,7 @@ async def reject_shop(shop_id: str, request: RejectRequest, admin: dict = Depend
         batch.update(shop_ref, {
             "is_verified": False,
             "status": "rejected",
-            "rejection_reason": request.reason,
+            "rejection_reason": payload.reason,
             "rejected_by": admin.get("email"),
             "updated_at": firestore.SERVER_TIMESTAMP
         })
@@ -84,7 +102,7 @@ async def reject_shop(shop_id: str, request: RejectRequest, admin: dict = Depend
             "seller_id": "ADMIN_TEAM",
             "shop_id": shop_id,
             "subject": f"❌ Shop Application Rejected: {shop_data.get('shop_name', 'Your Shop')}",
-            "last_message": f"Reason: {request.reason}",
+            "last_message": f"Reason: {payload.reason}",
             "status": "open",
             "created_at": firestore.SERVER_TIMESTAMP,
             "updated_at": firestore.SERVER_TIMESTAMP,
@@ -95,7 +113,7 @@ async def reject_shop(shop_id: str, request: RejectRequest, admin: dict = Depend
         message_ref = ticket_ref.collection("messages").document()
         batch.set(message_ref, {
             "sender_id": "ADMIN_SYSTEM",
-            "text": f"Your shop application was rejected by the admin team.\n\nReason: {request.reason}\n\nYou can reply directly to this message to appeal this decision or ask for clarification.",
+            "text": f"Your shop application was rejected by the admin team.\n\nReason: {payload.reason}\n\nYou can reply directly to this message to appeal this decision or ask for clarification.",
             "is_bid": False,
             "is_system_message": True,
             "timestamp": firestore.SERVER_TIMESTAMP,
@@ -104,6 +122,16 @@ async def reject_shop(shop_id: str, request: RejectRequest, admin: dict = Depend
 
         # Execute everything at once!
         batch.commit()
+        
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        if owner_id:
+            await request.app.state.redis.enqueue_job(
+                'process_push_notification',
+                owner_id,
+                "❌ Shop Application Rejected",
+                f"Reason: {payload.reason}",
+                f"/chat/{ticket_ref.id}"
+            )
         
         return {"message": f"Shop {shop_id} rejected. Appeal ticket created in user's inbox."}
         
@@ -115,7 +143,12 @@ async def reject_shop(shop_id: str, request: RejectRequest, admin: dict = Depend
 # 🚨 GLOBAL USER MODERATION (Dark Panel)
 # ==========================================
 @router.post("/users/{uid}/moderate", tags=["Admin Users"])
-async def moderate_user(uid: str, payload: UserModerationPayload, admin: dict = Depends(get_admin_user)):
+async def moderate_user(
+    uid: str, 
+    payload: UserModerationPayload, 
+    request: Request, # 🚨 Added Request for Redis
+    admin: dict = Depends(get_admin_user)
+):
     """Executes moderation action, cascades to their listings, and sends system message."""
     
     if payload.action not in ["warn", "ban", "restore", "nuke"]:
@@ -211,6 +244,20 @@ async def moderate_user(uid: str, payload: UserModerationPayload, admin: dict = 
             "resolution_action": payload.action
         })
 
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        if payload.action != "nuke":
+            alert_title = f"🚨 Account {payload.action.capitalize()}ed"
+            if payload.action == "restore":
+                alert_title = "✅ Account Restored"
+                
+            await request.app.state.redis.enqueue_job(
+                'process_push_notification',
+                uid,
+                alert_title,
+                payload.reason,
+                f"/chat/{payload.room_id}"
+            )
+
         return {"message": f"User {payload.action}ed successfully. Listings updated."}
 
     except Exception as e:
@@ -276,7 +323,12 @@ async def report_listing(listing_id: str, payload: ReportCreate, user: dict = De
 # 🚨 ITEM MODERATION (Red Panel)
 # ==========================================
 @router.post("/listings/{listing_id}/moderate", tags=["Trust & Safety"])
-async def moderate_listing(listing_id: str, payload: ModerateAction, admin: dict = Depends(get_admin_user)):
+async def moderate_listing(
+    listing_id: str, 
+    payload: ModerateAction, 
+    request: Request, # 🚨 Added Request for Redis
+    admin: dict = Depends(get_admin_user)
+):
     """Executes Warn, Hide, Delete, or Restore actions ON A SPECIFIC ITEM and alerts the seller."""
     
     if payload.action not in ["warn", "hide", "delete", "restore"]:
@@ -380,6 +432,15 @@ async def moderate_listing(listing_id: str, payload: ModerateAction, admin: dict
             "timestamp": firestore.SERVER_TIMESTAMP,
             "created_at": firestore.SERVER_TIMESTAMP
         })
+        
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        await request.app.state.redis.enqueue_job(
+            'process_push_notification',
+            seller_id,
+            warning_subject,
+            payload.reason,
+            f"/chat/{room_ref.id}"
+        )
 
         return {"message": f"Item successfully {payload.action}ed.", "status": "success"}
 
@@ -476,7 +537,12 @@ async def set_user_role(uid: str, request: RoleUpdate, admin: dict = Depends(get
 
 
 @router.post("/warn/{target_uid}", tags=["Admin - Users"])
-async def warn_user_generic(target_uid: str, payload: GenericWarning, admin: dict = Depends(get_current_user)):
+async def warn_user_generic(
+    target_uid: str, 
+    payload: GenericWarning, 
+    request: Request, # 🚨 Added Request for Redis
+    admin: dict = Depends(get_current_user)
+):
     """Creates a generic warning support ticket not tied to a listing."""
     role = admin.get("role", "guest")
     email = admin.get("email", "")
@@ -506,6 +572,15 @@ async def warn_user_generic(target_uid: str, payload: GenericWarning, admin: dic
             "timestamp": firestore.SERVER_TIMESTAMP,
             "created_at": firestore.SERVER_TIMESTAMP
         })
+        
+        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        await request.app.state.redis.enqueue_job(
+            'process_push_notification',
+            target_uid,
+            f"⚠️ OFFICIAL WARNING: {payload.subject}",
+            payload.message,
+            f"/chat/{room_ref.id}"
+        )
 
         # 🚨 Returns the room_id so the frontend can redirect the admin directly into the chat
         return {
@@ -541,4 +616,4 @@ async def get_all_support_tickets(admin: dict = Depends(get_admin_user)):
         
         return {"data": results}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))    
+        raise HTTPException(status_code=500, detail=str(e))

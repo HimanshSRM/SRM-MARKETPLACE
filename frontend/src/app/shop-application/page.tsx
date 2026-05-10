@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import { createShopProfile } from '@/lib/api'; // Make sure this matches your api.ts export!
 
 // If your API expects this exact interface, we define it here:
@@ -65,11 +64,9 @@ export default function ShopApplicationPage() {
     setIsLoading(true);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) throw new Error('Authentication lost. Please log in again.');
-
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
       // 1. Submit to FastAPI (Passing the overwrite flag)
-      const response = await createShopProfile(token, formData, isOverwriting);
+      const response = await createShopProfile(formData, isOverwriting);
 
       // 🚨 The Intercept: Backend found an old shop and we haven't made a choice yet!
       if (response.status === 'exists' && !isOverwriting) {

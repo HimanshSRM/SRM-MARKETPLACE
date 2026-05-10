@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import { auth } from '@/lib/firebase';
 import { getGuestDashboard } from '@/lib/api';
 import Link from 'next/link';
 
@@ -39,10 +38,8 @@ export default function GuestDashboardPage() {
     // 4. Fetch Guest Data
     const loadDashboard = async () => {
       try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
-        
-        const data = await getGuestDashboard(token);
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        const data = await getGuestDashboard();
         setDashboardData(data);
       } catch (error) {
         console.error("Failed to load guest dashboard:", error);

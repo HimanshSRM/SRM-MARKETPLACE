@@ -1,11 +1,9 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request
 from google.cloud import firestore
 
 from app.core.firebase import db
 from app.core.security import get_current_user, get_admin_user, get_active_user
 from app.models.support import TicketStatus, TicketCreate, AdminTicketReply, WarnUserRequest
-# 🚨 IMPORT YOUR NOTIFICATION SERVICE
-from app.services.notifications import send_push_notification
 
 router = APIRouter()
 
@@ -131,7 +129,7 @@ async def get_all_campus_tickets(admin: dict = Depends(get_admin_user)):
 async def admin_reply_to_ticket(
     ticket_id: str, 
     reply: AdminTicketReply, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     admin: dict = Depends(get_admin_user)
 ):
     try:
@@ -167,14 +165,14 @@ async def admin_reply_to_ticket(
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
-        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO USER
         if owner_id:
-            background_tasks.add_task(
-                send_push_notification,
-                user_id=owner_id,
-                title="👨‍💻 Admin Support Reply",
-                body=reply.admin_response,
-                url=f"/chat/{chat_room_id}"
+            await request.app.state.redis.enqueue_job(
+                'process_push_notification',
+                owner_id,
+                "👨‍💻 Admin Support Reply",
+                reply.admin_response,
+                f"/chat/{chat_room_id}"
             )
         
         return {"message": "Reply sent successfully."}
@@ -185,7 +183,7 @@ async def admin_reply_to_ticket(
 @router.put("/admin/{ticket_id}/resolve", tags=["Support & Admin"])
 async def resolve_ticket(
     ticket_id: str, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     admin: dict = Depends(get_admin_user)
 ):
     try:
@@ -219,14 +217,14 @@ async def resolve_ticket(
                 if chat_room_id:
                     db.collection("chat_rooms").document(chat_room_id).update({"status": TicketStatus.RESOLVED.value})
 
-        # 🚨 TRIGGER BACKGROUND ALERT TO USER
+        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO USER
         if target_uid and chat_room_id:
-            background_tasks.add_task(
-                send_push_notification,
-                user_id=target_uid,
-                title="✅ Ticket Resolved",
-                body="An admin has resolved and closed your support ticket.",
-                url=f"/chat/{chat_room_id}"
+            await request.app.state.redis.enqueue_job(
+                'process_push_notification',
+                target_uid,
+                "✅ Ticket Resolved",
+                "An admin has resolved and closed your support ticket.",
+                f"/chat/{chat_room_id}"
             )
 
         return {"message": "Ticket resolved and closed."}
@@ -238,7 +236,7 @@ async def resolve_ticket(
 async def warn_user(
     target_uid: str, 
     req: WarnUserRequest, 
-    background_tasks: BackgroundTasks, # 🚨 ADDED BackgroundTasks
+    request: Request, # 🚨 Replaced BackgroundTasks with Request
     admin: dict = Depends(get_admin_user)
 ):
     """Admin initiates a Warning ticket directly into a user's inbox."""
@@ -267,13 +265,13 @@ async def warn_user(
             "created_at": firestore.SERVER_TIMESTAMP 
         })
 
-        # 🚨 TRIGGER BACKGROUND ALERT TO USER
-        background_tasks.add_task(
-            send_push_notification,
-            user_id=target_uid,
-            title=f"⚠️ Official Action: {req.subject}",
-            body=req.message,
-            url=f"/chat/{chat_room_id}"
+        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO USER
+        await request.app.state.redis.enqueue_job(
+            'process_push_notification',
+            target_uid,
+            f"⚠️ Official Action: {req.subject}",
+            req.message,
+            f"/chat/{chat_room_id}"
         )
 
         return {"message": "Warning sent to user.", "chat_room_id": chat_room_id}

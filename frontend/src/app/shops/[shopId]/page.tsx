@@ -4,7 +4,6 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import { getLiveShops, getShopCatalog, Shop, CatalogItem, initiateChat } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { auth } from '@/lib/firebase';
 import ReportModal from '@/components/ReportModal'; 
 
 export default function ShopCatalogPage() {
@@ -29,16 +28,15 @@ export default function ShopCatalogPage() {
     const fetchShopData = async () => {
       try {
         setIsLoading(true);
-        const token = await auth.currentUser?.getIdToken();
         
-        // 🚨 3. Now it's safe to check if they are logged out
-        if (!token || !profile) {
+        // 🚨 3. Now it's safe to check if they are logged out. API Wrapper handles auth!
+        if (!profile) {
           setError("You must be logged in to view shop catalogs.");
           setIsLoading(false);
           return;
         }
         
-        const allShops = await getLiveShops(token);
+        const allShops = await getLiveShops();
         const currentShop = allShops.find(s => s.id === shopId);
         
         if (!currentShop) {
@@ -48,7 +46,7 @@ export default function ShopCatalogPage() {
         }
         setShop(currentShop);
 
-        const catalogData = await getShopCatalog(token, shopId);
+        const catalogData = await getShopCatalog(shopId);
         setCatalog(catalogData);
 
       } catch (err) {
@@ -69,14 +67,14 @@ export default function ShopCatalogPage() {
     }
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token || !shop?.owner_id) return;
+      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      if (!shop?.owner_id) return;
 
       const itemName = item.name || item.title;
       const displayName = shop.shop_name || shop.name || "Shop";
       const initialMessage = `Hi ${displayName}! I'm interested in "${itemName}". Is this currently available?`;
       
-      const room = await initiateChat(token, item.id, shop.owner_id, initialMessage);
+      const room = await initiateChat(item.id, shop.owner_id, initialMessage);
       const roomId = room.id || room.room_id; 
       
       router.push(`/chat/${roomId}`); 

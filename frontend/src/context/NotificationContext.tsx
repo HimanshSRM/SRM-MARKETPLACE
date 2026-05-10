@@ -3,7 +3,8 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { useAuth } from './AuthContext';
 import { getInbox } from '@/lib/api';
-import { auth, messaging } from '@/lib/firebase'; // 🚨 Added 'messaging' export
+import { auth, messaging, db } from '@/lib/firebase'; 
+import { collection, query, where, orderBy, limit, onSnapshot } from 'firebase/firestore';
 import { onMessage } from 'firebase/messaging';
 import toast, { Toaster } from 'react-hot-toast';
 import { useRouter } from 'next/navigation';
@@ -21,7 +22,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
   const router = useRouter();
   const [unreadCount, setUnreadCount] = useState(0);
 
-  // 1. INITIAL LOAD: Just fetch the unread count ONCE when the app opens
+  // 1. INBOX UNREAD COUNT LOAD
   useEffect(() => {
     if (isAuthLoading || !profile || profile.role === 'guest') {
       setUnreadCount(0);
@@ -30,10 +31,10 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
 
     const fetchInitialUnread = async () => {
       try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
+        // 🚨 CLEANUP: We just check if the user exists. api.ts handles the actual token now!
+        if (!auth.currentUser) return;
 
-        const inbox = await getInbox(token);
+        const inbox = await getInbox();
         const allRooms = [...(inbox.buying || []), ...(inbox.selling || []), ...(inbox.support || []), ...(inbox.pools || [])];
         
         let currentUnread = 0;
@@ -52,63 +53,101 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
     fetchInitialUnread();
   }, [profile, isAuthLoading]);
 
-  // 2. TRUE REAL-TIME FOREGROUND ALERTS: Replaces the 15-second polling!
+  // 2. FCM PUSH ALERTS & GLOBAL CART POOL BROADCAST
   useEffect(() => {
-    let unsubscribe: any;
+    let unsubscribeFCM: any;
+    let unsubscribePools: any;
 
-    const setupForegroundListener = async () => {
+    const setupListeners = async () => {
       try {
-        // Wait for the messaging instance to safely initialize
+        // --- A. FCM Push Listener (Chats, Actions, Moderation) ---
         const msg = await messaging();
-        if (!msg) return;
+        if (msg) {
+          unsubscribeFCM = onMessage(msg, (payload) => {
+            const targetUrl = payload.data?.url || '/inbox';
+            const currentPath = window.location.pathname;
 
-        // Firebase WebSockets: Listens for pushes ONLY when the app is actively open
-        unsubscribe = onMessage(msg, (payload) => {
-          console.log("Foreground push notification received!", payload);
+            // Suppress toast if they are already in the chat room
+            if (currentPath === targetUrl) return; 
 
-          // 1. Instantly increase the red notification badge!
-          setUnreadCount(prev => prev + 1);
+            setUnreadCount(prev => prev + 1);
 
-          // 2. Show the beautiful in-app Toast UI
-          toast(
-            (t) => (
+            toast.custom((t) => (
               <div 
-                onClick={() => { 
-                  toast.dismiss(t.id); 
-                  // If your Python backend sends a 'url' in the data payload, route there. Otherwise, default to inbox.
-                  router.push(payload.data?.url || '/inbox'); 
-                }} 
-                className="cursor-pointer"
+                onClick={() => { toast.dismiss(t.id); router.push(targetUrl); }} 
+                className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-blue-500 flex items-start gap-3"
               >
-                <p className="font-bold text-sm mb-1">
-                  {payload.notification?.title || '💬 New Alert'}
-                </p>
-                <p className="text-xs text-gray-600 line-clamp-2">
-                  {payload.notification?.body || 'You have a new message.'}
-                </p>
+                <div className="text-2xl">💬</div>
+                <div>
+                  <p className="font-bold text-sm text-gray-900 mb-1">{payload.notification?.title || 'New Alert'}</p>
+                  <p className="text-xs text-gray-600 line-clamp-2">{payload.notification?.body}</p>
+                </div>
               </div>
-            ),
-            { duration: 5000, position: 'top-right', style: { borderRadius: '12px', border: '1px solid #e5e7eb' } }
+            ), { duration: 5000, position: 'top-right' });
+          });
+        }
+
+        // --- B. The "Uber Style" Global Cart Pool Broadcast ---
+        if (profile && profile.role !== 'guest') {
+          const poolsQuery = query(
+            collection(db, 'group_orders'),
+            where('status', '==', 'open'),
+            orderBy('created_at', 'desc'),
+            limit(1) // Only watch the very top of the list for massive cost savings
           );
-        });
+
+          let isInitialLoad = true;
+
+          unsubscribePools = onSnapshot(poolsQuery, (snapshot) => {
+            if (isInitialLoad) {
+              isInitialLoad = false; // Ignore the pools that already existed when the app opened
+              return;
+            }
+
+            snapshot.docChanges().forEach((change) => {
+              if (change.type === 'added') {
+                const newPool = change.doc.data();
+                
+                // Don't show the broadcast to the person who just created it!
+                if (newPool.host_id !== profile.uid) {
+                  toast.custom((t) => (
+                    <div 
+                      onClick={() => { toast.dismiss(t.id); router.push('/'); }} 
+                      className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-purple-500 flex items-start gap-3 animate-fade-in-up"
+                    >
+                      <div className="text-2xl">🛒</div>
+                      <div>
+                        <p className="font-bold text-sm text-gray-900 mb-1">New {newPool.app_name} Pool!</p>
+                        <p className="text-xs text-gray-600">
+                          <span className="font-bold">{newPool.host_name}</span> just started an order to {newPool.pickup_location}.
+                        </p>
+                        <p className="text-[10px] text-purple-600 font-bold mt-1 uppercase">Click to view feed</p>
+                      </div>
+                    </div>
+                  ), { duration: 6000, position: 'top-center' }); // Drops down prominently from the top center
+                }
+              }
+            });
+          });
+        }
 
       } catch (error) {
-        console.warn("Foreground notification listener failed to setup.", error);
+        console.warn("Listeners failed to setup.", error);
       }
     };
 
-    setupForegroundListener();
+    setupListeners();
 
-    // Clean up the listener if the component unmounts
     return () => {
-      if (unsubscribe) unsubscribe();
+      if (unsubscribeFCM) unsubscribeFCM();
+      if (unsubscribePools) unsubscribePools();
     };
-  }, [router]);
+  }, [router, profile]);
 
   return (
     <NotificationContext.Provider value={{ unreadCount }}>
       {children}
-      <Toaster /> {/* This renders the actual popups */}
+      <Toaster />
     </NotificationContext.Provider>
   );
 };

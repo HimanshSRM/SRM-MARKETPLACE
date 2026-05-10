@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { getLiveShops, Shop } from '@/lib/api';
-import { auth } from '@/lib/firebase';
 import { useAuth } from '@/context/AuthContext';
 
 export default function ShopsDirectoryPage() {
@@ -29,14 +28,8 @@ export default function ShopsDirectoryPage() {
           return;
         }
 
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) {
-          setError("Authentication error. Please log in again.");
-          setIsLoading(false);
-          return;
-        }
-
-        const data = await getLiveShops(token);
+        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        const data = await getLiveShops();
         
         // Only show verified shops in the public directory
         const verifiedShops = data.filter(shop => shop.is_verified);

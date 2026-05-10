@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Request
 from google.cloud import firestore
 
 from app.core.firebase import db
@@ -11,7 +11,6 @@ from app.models.chat import (
     BulkDeletePayload,
     TicketCreate
 )
-from app.services.notifications import send_push_notification
 
 router = APIRouter()
 
@@ -21,7 +20,7 @@ router = APIRouter()
 @router.post("/initiate", tags=["Chat & Bidding"])
 async def initiate_chat(
     data: ChatInitiate, 
-    background_tasks: BackgroundTasks, 
+    request: Request, # 🚨 Added Request to access Redis
     user: dict = Depends(get_transacting_user)
 ):
     sender_id = user.get("uid")
@@ -76,12 +75,13 @@ async def initiate_chat(
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
-        background_tasks.add_task(
-            send_push_notification,
-            user_id=data.owner_id,
-            title="💬 New Conversation Started",
-            body=data.initial_message,
-            url=f"/chat/{room_id}"
+        # 🚨 THE REDIS FIX: Trigger the background worker
+        await request.app.state.redis.enqueue_job(
+            'process_push_notification',
+            data.owner_id,
+            "💬 New Conversation Started",
+            data.initial_message,
+            f"/chat/{room_id}"
         )
         
         return {"message": "Message sent successfully!", "room_id": room_id}
@@ -152,7 +152,7 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
             if "updated_at" in room and room["updated_at"]: 
                 room["updated_at"] = str(room["updated_at"])
                 
-            # 🚨 THE FIX: Inject the missing data directly from our high-speed cache
+            # Inject the missing data directly from our high-speed cache
             if not room.get("listing_title") and room.get("listing_id"):
                 room["listing_title"] = listing_cache.get(room.get("listing_id"))
                 
@@ -272,7 +272,7 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
 async def send_message(
     room_id: str, 
     req: dict, 
-    background_tasks: BackgroundTasks, 
+    request: Request, # 🚨 Added Request to access Redis
     user: dict = Depends(get_current_user)
 ):
     try:
@@ -339,27 +339,36 @@ async def send_message(
 
         target_uids = []
         
+        # 1. GROUP CHAT FIX
         if room_data.get("type") == "group_order":
-            participant_ids = room_data.get("participant_ids", [])
-            host_id = room_data.get("host_id")
-            
+            # 🚨 BUG FIX: The field in chat_rooms is called 'participants', not 'participant_ids'
+            participant_ids = room_data.get("participants", [])
             target_uids.extend([p for p in participant_ids if p != uid])
-            if host_id and host_id != uid and host_id not in target_uids:
-                target_uids.append(host_id)
+            
+        # 2. 1-ON-1 AND SUPPORT CHAT FIX
         else:
             if is_buyer:
-                target_uids.append(room_data.get("seller_id"))
+                # The user is sending a message. Target the seller.
+                target_id = room_data.get("seller_id")
+                if target_id != "ADMIN_TEAM": # Don't try to send a push to the abstract admin team
+                    target_uids.append(target_id)
             else:
+                # The Admin (or Seller) is replying. Target the buyer!
                 target_uids.append(room_data.get("buyer_id"))
                 
+        # 🚨 TRIGGER THE REDIS BACKGROUND WORKER FOR EACH RECIPIENT
         for target_id in target_uids:
-            if target_id and target_id != "ADMIN_TEAM":
-                background_tasks.add_task(
-                    send_push_notification,
-                    user_id=target_id,
-                    title=f"💬 {user_name}" if room_data.get("type") == "group_order" else "💬 New Message",
-                    body=msg_text,
-                    url=f"/chat/{room_id}"
+            if target_id:
+                title = f"💬 {user_name}" if room_data.get("type") == "group_order" else "💬 New Message"
+                if is_admin_support:
+                    title = "👨‍💻 Admin Support Reply"
+                    
+                await request.app.state.redis.enqueue_job(
+                    'process_push_notification',
+                    target_id,
+                    title,
+                    msg_text,
+                    f"/chat/{room_id}"
                 )
 
         msg_data["created_at"] = "Just now"
@@ -379,7 +388,7 @@ async def send_message(
 async def accept_bid(
     room_id: str, 
     message_id: str, 
-    background_tasks: BackgroundTasks, 
+    request: Request, # 🚨 Added Request to access Redis
     user: dict = Depends(get_transacting_user)
 ):
     try:
@@ -408,12 +417,13 @@ async def accept_bid(
         
         buyer_id = room_data.get("buyer_id")
         if buyer_id:
-            background_tasks.add_task(
-                send_push_notification,
-                user_id=buyer_id,
-                title="🎉 Bid Accepted!",
-                body="The seller accepted your bid! Open the chat to finalize details.",
-                url=f"/chat/{room_id}"
+            # 🚨 THE REDIS FIX: Trigger the background worker
+            await request.app.state.redis.enqueue_job(
+                'process_push_notification',
+                buyer_id,
+                "🎉 Bid Accepted!",
+                "The seller accepted your bid! Open the chat to finalize details.",
+                f"/chat/{room_id}"
             )
         
         return {"message": "Bid accepted! The item is now marked as sold.", "listing_id": listing_id}

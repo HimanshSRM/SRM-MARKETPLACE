@@ -3,7 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { collection, query, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import { getActiveGroupOrders, createGroupOrder, joinGroupOrder, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage } from '@/lib/api';
 
@@ -30,40 +30,42 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const fetchOrders = async (showSpinner = true) => {
     if (showSpinner) setIsLoading(true);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (token) {
-        const data = await getActiveGroupOrders(token);
-        
-        const mine = data.filter((o: GroupOrder) => 
-          (
-            o.host_id === currentUser.uid || 
-            o.participant_ids?.includes(currentUser.uid) || 
-            o.participants?.some(p => p.user_id === currentUser.uid)
-          ) 
-          && o.status !== 'cancelled' 
-          && o.status !== 'settled'
-        );
+      // 🚨 CLEANUP: API wrapper handles auth. Just fetch the data!
+      const data = await getActiveGroupOrders();
+      
+      const mine = data.filter((o: GroupOrder) => 
+        (
+          o.host_id === currentUser.uid || 
+          o.participant_ids?.includes(currentUser.uid) || 
+          o.participants?.some(p => p.user_id === currentUser.uid)
+        ) 
+        && o.status !== 'cancelled' 
+        && o.status !== 'settled'
+      );
 
-        const discover = data.filter((o: GroupOrder) => 
-          o.status === 'open' 
-          && o.host_id !== currentUser.uid 
-          && !o.participant_ids?.includes(currentUser.uid) 
-        );
-        
-        setMyPools(mine);
-        setDiscoverPools(discover);
-        
-        if (showManageModal) {
-          const updatedOrder = data.find((o: GroupOrder) => o.id === showManageModal.id);
-          if (updatedOrder && updatedOrder.status !== 'cancelled' && updatedOrder.status !== 'settled') {
-            setShowManageModal(updatedOrder);
-          } else if (updatedOrder?.status === 'cancelled' || updatedOrder?.status === 'settled') {
-            setShowManageModal(null); 
-          }
+      const discover = data.filter((o: GroupOrder) => 
+        o.status === 'open' 
+        && o.host_id !== currentUser.uid 
+        && !o.participant_ids?.includes(currentUser.uid) 
+      );
+      
+      setMyPools(mine);
+      setDiscoverPools(discover);
+      
+      if (showManageModal) {
+        const updatedOrder = data.find((o: GroupOrder) => o.id === showManageModal.id);
+        if (updatedOrder && updatedOrder.status !== 'cancelled' && updatedOrder.status !== 'settled') {
+          setShowManageModal(updatedOrder);
+        } else if (updatedOrder?.status === 'cancelled' || updatedOrder?.status === 'settled') {
+          setShowManageModal(null); 
         }
       }
-    } catch (err) { console.error("Failed to load pools", err); } 
-    finally { if (showSpinner) setIsLoading(false); }
+    } catch (err) { 
+      console.error("Failed to load pools", err); 
+    } 
+    finally { 
+      if (showSpinner) setIsLoading(false); 
+    }
   };
 
   useEffect(() => {
@@ -174,8 +176,14 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
       fee = parseFloat(input) || 0;
     }
 
-    const token = await auth.currentUser?.getIdToken();
-    if (token) { await updateGroupOrderStatus(token, order.id, newStatus, fee); onRefresh(); }
+    try {
+      // 🚨 CLEANUP: API Wrapper handles auth
+      await updateGroupOrderStatus(order.id, newStatus, fee); 
+      onRefresh();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to update order status");
+    }
   };
 
   return (
@@ -271,8 +279,9 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     if (!window.confirm(`Are you sure you want to remove ${userName} from the order?`)) return;
     setIsRefreshing(true);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (token) { await kickParticipant(token, order.id, userId); await onRefresh(); }
+      // 🚨 CLEANUP: API Wrapper handles auth
+      await kickParticipant(order.id, userId); 
+      await onRefresh(); 
     } catch (err: any) { alert(err.message || "Failed to remove user"); setIsRefreshing(false); }
   };
 
@@ -280,12 +289,10 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     if (!window.confirm("Are you sure? This will permanently close the order and archive it.")) return;
     setIsRefreshing(true);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (token) {
-        await settleGroupOrder(token, order.id);
-        onClose();
-        await onRefresh();
-      }
+      // 🚨 CLEANUP: API Wrapper handles auth
+      await settleGroupOrder(order.id);
+      onClose();
+      await onRefresh();
     } catch (err: any) {
       alert(err.message || "Failed to settle order");
       setIsRefreshing(false);
@@ -297,12 +304,10 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     
     setIsRefreshing(true);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (token) {
-        await updateGroupOrderStatus(token, order.id, 'cancelled');
-        onClose(); 
-        await onRefresh(); 
-      }
+      // 🚨 CLEANUP: API Wrapper handles auth
+      await updateGroupOrderStatus(order.id, 'cancelled');
+      onClose(); 
+      await onRefresh(); 
     } catch (err: any) {
       alert(err.message || "Failed to cancel order");
       setIsRefreshing(false);
@@ -338,11 +343,9 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
 
     setIsBlasting(true);
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (token) {
-        await sendMessage(token, order.chat_room_id, currentUser.uid, message, false);
-        alert("✅ Breakdown sent successfully to the Group Chat!");
-      }
+      // 🚨 CLEANUP: API Wrapper handles auth. Added the new parameters to match ChatRoomPage
+      await sendMessage(order.chat_room_id, currentUser.uid, message, false);
+      alert("✅ Breakdown sent successfully to the Group Chat!");
     } catch (err) {
       alert("Failed to send breakdown to chat.");
     } finally {
@@ -491,7 +494,11 @@ function CreateOrderModal({ onClose, onSuccess }: { onClose: () => void, onSucce
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); setIsSubmitting(true);
-    try { const token = await auth.currentUser?.getIdToken(); if (token) { await createGroupOrder(token, formData); onSuccess(); } } 
+    try { 
+      // 🚨 CLEANUP: API Wrapper handles auth
+      await createGroupOrder(formData); 
+      onSuccess(); 
+    } 
     catch (err) { setIsSubmitting(false); alert("Error creating order"); }
   };
 
@@ -552,11 +559,9 @@ function JoinOrderModal({ order, onClose, router }: { order: GroupOrder, onClose
     if (cart.length === 0 || !contactNumber || !block) return alert("Add items, your phone, and your block first!");
     setIsSubmitting(true);
     try { 
-      const token = await auth.currentUser?.getIdToken(); 
-      if (token) { 
-        await joinGroupOrder(token, order.id, { contact_number: contactNumber, block, items: cart }); 
-        router.push(`/chat/${order.chat_room_id}`); 
-      } 
+      // 🚨 CLEANUP: API Wrapper handles auth
+      await joinGroupOrder(order.id, { contact_number: contactNumber, block, items: cart }); 
+      router.push(`/chat/${order.chat_room_id}`); 
     } 
     catch (err) { setIsSubmitting(false); alert("Failed to join order"); }
   };

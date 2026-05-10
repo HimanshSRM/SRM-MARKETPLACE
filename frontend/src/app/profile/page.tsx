@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import { auth } from '@/lib/firebase';
 import { getStudentDashboard, deleteMyListing } from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -37,10 +36,8 @@ export default function StudentDashboardPage() {
       }
 
       try {
-        const token = await auth.currentUser?.getIdToken();
-        if (!token) return;
-        
-        const data = await getStudentDashboard(token);
+        // 🚨 CLEANUP: API wrapper handles auth automatically!
+        const data = await getStudentDashboard();
         setDashboardData(data);
         setMyListings(data.listings || []);
       } catch (error) {
@@ -59,10 +56,8 @@ export default function StudentDashboardPage() {
     if (!window.confirm("Are you sure you want to permanently delete this listing?")) return;
     
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      
-      await deleteMyListing(token, listingId);
+      // 🚨 CLEANUP: API wrapper handles auth automatically!
+      await deleteMyListing(listingId);
       
       setMyListings((prev) => prev.filter(item => item.id !== listingId));
       toast.success("Listing deleted successfully.");

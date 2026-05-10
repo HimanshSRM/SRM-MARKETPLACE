@@ -18,6 +18,9 @@ export default function ChatRoomPage() {
   const [roomStatus, setRoomStatus] = useState<'open' | 'locked' | 'delivered' | 'active' | 'sold' | 'resolved'>('active');
   const [isLoading, setIsLoading] = useState(true);
 
+  // 🚀 OPTIMISTIC UI STATE
+  const [pendingMessages, setPendingMessages] = useState<any[]>([]);
+
   // --- PERSISTENT DRAFT STATE: USER CHAT & BIDS ---
   const [newMessage, setNewMessage] = useState('');
   const [isBidding, setIsBidding] = useState(false);
@@ -75,7 +78,7 @@ export default function ChatRoomPage() {
     if (!isSelectionMode) {
        scrollToBottom();
     }
-  }, [messages, isSelectionMode]);
+  }, [messages, pendingMessages, isSelectionMode]); // Re-scroll when pending messages change
 
   const formatTime = (dateString?: string) => {
     if (!dateString) return 'Just now'; 
@@ -84,10 +87,8 @@ export default function ChatRoomPage() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  // 🚨 NEW HELPER: Converts raw URLs and UPI links into clickable <a> tags
   const renderTextWithLinks = (text: string) => {
     if (!text) return "...";
-    // Regex matches http://, https://, and upi:// 
     const urlRegex = /(https?:\/\/[^\s]+|upi:\/\/[^\s]+)/g;
     const parts = text.split(urlRegex);
 
@@ -100,7 +101,7 @@ export default function ChatRoomPage() {
             target="_blank"
             rel="noopener noreferrer"
             className="text-blue-500 hover:text-blue-700 underline break-all font-bold"
-            onClick={(e) => e.stopPropagation()} // Prevents accidentally selecting the message when clicking the link
+            onClick={(e) => e.stopPropagation()} 
           >
             {part}
           </a>
@@ -113,11 +114,8 @@ export default function ChatRoomPage() {
   const loadChatSecurely = async () => {
     try {
       setIsLoading(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (token) {
-        const { room } = await getChatMessages(token, roomId);
-        setRoomDetails(room);
-      }
+      const { room } = await getChatMessages(roomId);
+      setRoomDetails(room);
     } catch (error) {
       console.error("Error loading chat:", error);
     } finally {
@@ -126,15 +124,13 @@ export default function ChatRoomPage() {
   };
 
   useEffect(() => {
-    // 🚨 BULLETPROOF GUARD: Wait for React Context AND Firebase Auth to be 100% ready
     if (isAuthLoading || !profile?.uid || !auth.currentUser) {
       setIsLoading(false);
       return;
     }
 
-    loadChatSecurely(); // Initial secure load via API
+    loadChatSecurely(); 
 
-    // Listen to Messages in Real-Time
     const messagesRef = collection(db, 'chat_rooms', roomId, 'messages');
     const q = query(messagesRef, orderBy('timestamp', 'asc'));
 
@@ -162,7 +158,6 @@ export default function ChatRoomPage() {
       if (hasAcceptedBid) setRoomStatus('sold');
     });
 
-    // Listen to Room Status Updates (Locked, Arrived, Resolved)
     const roomRef = doc(db, 'chat_rooms', roomId);
     const unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -182,9 +177,8 @@ export default function ChatRoomPage() {
       unsubscribeMessages();
       unsubscribeRoom();
     };
-  }, [roomId, profile, isAuthLoading]); // Removed auth.currentUser from deps to prevent unnecessary re-renders
+  }, [roomId, profile, isAuthLoading]); 
 
-  // 🚨 THE GOLDEN RULES
   const isBanned = profile?.role === 'banned';
   const isAdminThread = roomDetails?.seller_id === 'ADMIN_TEAM';
   const canChat = !isBanned || isAdminThread;
@@ -192,29 +186,55 @@ export default function ChatRoomPage() {
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (roomStatus === 'sold' || roomStatus === 'resolved') return;
-    if (!canChat) return;
+    if (!canChat || !profile?.uid) return;
+
+    const textToSend = newMessage || `Bid: ₹${bidAmount}`;
+    const isBidToSend = isBidding;
+    const bidAmountToSend = isBidding ? parseFloat(bidAmount) : undefined;
+    
+    // Don't send empty messages
+    if (!textToSend.trim() && !isBidToSend) return;
+
+    // 🚀 1. CREATE OPTIMISTIC MESSAGE
+    const tempId = `temp-${Date.now()}`;
+    const optimisticMsg = {
+      id: tempId,
+      sender_id: profile.uid,
+      text: textToSend,
+      is_bid: isBidToSend,
+      bid_amount: bidAmountToSend,
+      timestamp: new Date().toISOString(),
+      isPending: true, // Custom flag for UI rendering
+    };
+
+    // 🚀 2. INSTANT UI UPDATE
+    setPendingMessages(prev => [...prev, optimisticMsg]);
+    setTimeout(scrollToBottom, 50);
+
+    // 🚀 3. CLEAR INPUTS INSTANTLY
+    setNewMessage('');
+    setIsBidding(false);
+    setBidAmount('');
+    localStorage.removeItem(`draft_msg_${roomId}`);
+    localStorage.removeItem(`draft_bid_${roomId}`);
+    localStorage.removeItem(`draft_isBidding_${roomId}`);
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token || !profile?.uid) return;
-
-      // We still SEND the message via Python so it can run security/banning checks
+      // 4. Send to Backend
       await sendMessage(
-        token, roomId, profile.uid,
-        newMessage || `Bid: ₹${bidAmount}`, 
-        isBidding, isBidding ? parseFloat(bidAmount) : undefined
+        roomId, profile.uid,
+        textToSend, 
+        isBidToSend, bidAmountToSend
       );
       
-      // CLEAR DRAFTS ON SUCCESS
-      setNewMessage('');
-      setIsBidding(false);
-      setBidAmount('');
-      localStorage.removeItem(`draft_msg_${roomId}`);
-      localStorage.removeItem(`draft_bid_${roomId}`);
-      localStorage.removeItem(`draft_isBidding_${roomId}`);
+      // 5. On Success, remove from pending (Firebase snapshot will naturally pull down the real message)
+      setPendingMessages(prev => prev.filter(m => m.id !== tempId));
 
     } catch (error) {
-      alert("Failed to send.");
+      // 6. Rollback if the API fails
+      setPendingMessages(prev => prev.filter(m => m.id !== tempId));
+      setNewMessage(textToSend); // Put their text back so they don't lose it!
+      alert("Failed to send message. Please check your connection.");
     }
   };
 
@@ -232,15 +252,9 @@ export default function ChatRoomPage() {
     if (!window.confirm(`Are you sure you want to permanently delete ${selectedMessages.length} message(s)?`)) return;
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      await deleteChatMessages(token, roomId, selectedMessages);
-
+      await deleteChatMessages(roomId, selectedMessages);
       setSelectedMessages([]);
       setIsSelectionMode(false);
-      // Data will auto-update via onSnapshot!
-
     } catch (error: any) {
       alert(error.message || "Failed to delete messages.");
     }
@@ -256,9 +270,7 @@ export default function ChatRoomPage() {
     if (!confirmAccept) return;
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      await acceptBid(token, roomId, messageId);
+      await acceptBid(roomId, messageId);
       alert("Deal closed! Item marked as sold.");
     } catch (error) {
       alert("Error accepting bid. You might not be the owner.");
@@ -270,9 +282,7 @@ export default function ChatRoomPage() {
     if (!confirmResolve) return;
 
     try {
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-      await resolveSupportTicket(token, roomId);
+      await resolveSupportTicket(roomId);
       alert("Ticket resolved successfully.");
     } catch (error) {
       alert("Failed to resolve ticket.");
@@ -288,10 +298,7 @@ export default function ChatRoomPage() {
 
     try {
       setIsModerating(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      await moderateListing(token, roomDetails.listing_id, modAction, modReason, roomDetails.shop_id);
+      await moderateListing(roomDetails.listing_id, modAction, modReason, roomDetails.shop_id);
       
       setModAction(null);
       setModReason('');
@@ -323,13 +330,10 @@ export default function ChatRoomPage() {
 
     try {
       setIsUserModerating(true);
-      const token = await auth.currentUser?.getIdToken();
-      if (!token) return;
-
-      await moderateUser(token, targetUid, action, userModReason, roomId);
+      await moderateUser( targetUid, action, userModReason, roomId);
 
       if (action === 'nuke') {
-        await resolveSupportTicket(token, roomId);
+        await resolveSupportTicket( roomId);
       }
 
       setUserModReason(""); 
@@ -341,7 +345,6 @@ export default function ChatRoomPage() {
     }
   };
 
-  // 🚨 SMART BACK BUTTON LOGIC
   const handleBack = () => {
     if (window.history.length > 2) {
       router.back();
@@ -358,7 +361,6 @@ export default function ChatRoomPage() {
   const isDirectUserTicket = roomDetails?.listing_id === 'USER_MODERATION';
   const isGroupOrder = roomDetails?.type === 'group_order';
 
-  // Extract current status from the latest system message for the visual tracker
   let currentGroupStatus = 'open';
   if (isGroupOrder) {
     const latestSys = messages.slice().reverse().find(m => m.sender_id === 'system');
@@ -367,6 +369,9 @@ export default function ChatRoomPage() {
       if (latestSys.text.includes("ARRIVED")) currentGroupStatus = 'delivered';
     }
   }
+
+  // 🚀 Combine Real Messages and Pending Messages for rendering
+  const allDisplayMessages = [...messages, ...pendingMessages];
 
   return (
     <div className="flex flex-col h-screen bg-white max-w-2xl mx-auto shadow-2xl relative">
@@ -388,8 +393,6 @@ export default function ChatRoomPage() {
         </div>
         
         <div className="flex items-center gap-2">
-          
-          {/* Bulk Delete Controls */}
           {isSelectionMode ? (
             <>
               <button onClick={() => { setIsSelectionMode(false); setSelectedMessages([]); }} className="px-3 py-1.5 text-xs font-bold text-gray-500 hover:text-gray-800 transition">
@@ -408,7 +411,6 @@ export default function ChatRoomPage() {
             )
           )}
 
-          {/* Status Badges */}
           {!isSelectionMode && roomStatus === 'sold' && <div className="px-4 py-1 bg-green-600 text-white text-[10px] font-black uppercase tracking-widest rounded-full animate-bounce">Sold</div>}
           {!isSelectionMode && isSupport && roomStatus === 'resolved' && <div className="px-4 py-1 bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest rounded-full">Resolved</div>}
           {!isSelectionMode && isSupport && isAdmin && roomStatus !== 'resolved' && (
@@ -419,7 +421,6 @@ export default function ChatRoomPage() {
         </div>
       </div>
 
-      {/* THE VISUAL TRACKER (Group Orders Only) */}
       {isGroupOrder && (
         <div className="bg-white px-8 py-3 border-b flex justify-between items-center text-xs font-bold shadow-sm z-10">
           <div className={`flex flex-col items-center transition-colors duration-300 ${currentGroupStatus === 'open' ? 'text-purple-600' : 'text-gray-400'}`}>
@@ -450,7 +451,6 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* Admin Moderation Panels */}
         {isAdmin && isSupport && isDirectUserTicket && (
           <div className="mb-6 bg-gray-900 rounded-2xl p-4 shadow-lg border border-gray-800">
             <div className="flex items-center gap-2 mb-3">
@@ -493,16 +493,15 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {messages.map((msg: any, index) => {
+        {/* 🚀 Render Combined Messages Array */}
+        {allDisplayMessages.map((msg: any, index) => {
           const isMe = msg.sender_id === profile?.uid;
           const canDelete = isMe || isAdmin; 
           const isSelected = selectedMessages.includes(msg.id?.toString());
           
-          // 🚨 SMART MESSAGE IDENTIFICATION
           const isBotMessage = msg.sender_id === 'system';
           const isAdminAction = msg.sender_id === 'ADMIN_SYSTEM' || (msg.is_system_message && !isBotMessage);
 
-          // 1. NEUTRAL BOT SYSTEM MESSAGES (For Cart Pools)
           if (isBotMessage) {
             return (
               <div key={msg.id || index} className="flex justify-center my-4 w-full">
@@ -514,7 +513,6 @@ export default function ChatRoomPage() {
             );
           }
 
-          // 2. AGGRESSIVE ADMIN ACTION MESSAGES (For Warnings/Bans)
           if (isAdminAction) {
             return (
               <div key={msg.id || index} className="flex justify-center my-6 w-full">
@@ -532,18 +530,16 @@ export default function ChatRoomPage() {
             );
           }
           
-          // 3. REGULAR USER CHAT MESSAGES
           return (
             <div key={msg.id || index} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} my-1`}>
               
-              {/* SENDER NAME LABEL (Visible for others in group chats) */}
               {!isMe && msg.sender_name && (
                 <span className="text-[10px] text-gray-500 mb-0.5 ml-2 font-bold">{msg.sender_name}</span>
               )}
 
               <div className={`flex items-center gap-2 max-w-[85%] ${isMe ? 'flex-row-reverse' : 'flex-row'}`}>
                 
-                {isSelectionMode && canDelete && !isBanned && (
+                {isSelectionMode && canDelete && !isBanned && !msg.isPending && (
                   <input 
                     type="checkbox" 
                     checked={isSelected}
@@ -554,20 +550,19 @@ export default function ChatRoomPage() {
 
                 <div 
                   onClick={() => {
-                    if (isSelectionMode && canDelete && !isBanned) toggleMessageSelection(msg.id);
+                    if (isSelectionMode && canDelete && !isBanned && !msg.isPending) toggleMessageSelection(msg.id);
                   }}
                   className={`p-4 rounded-2xl shadow-sm transition-all ${
                     isMe ? 'bg-blue-600 text-white rounded-br-none' : (isSupport ? 'bg-gray-800 text-white rounded-bl-none' : 'bg-white text-gray-800 border rounded-bl-none')
-                  } ${isSelectionMode && canDelete && !isBanned ? 'cursor-pointer hover:opacity-90 ' + (isSelected ? 'ring-4 ring-red-400' : '') : ''}`}
+                  } ${isSelectionMode && canDelete && !isBanned && !msg.isPending ? 'cursor-pointer hover:opacity-90 ' + (isSelected ? 'ring-4 ring-red-400' : '') : ''} ${msg.isPending ? 'opacity-70' : ''}`}
                 >
-                  {/* 🚨 THE FIX: Render text through the helper function to make UPI links clickable */}
                   <p className="text-sm whitespace-pre-wrap">{renderTextWithLinks(msg.text)}</p>
                   
                   {!isSupport && msg.is_bid && msg.bid_amount && (
                     <div className={`mt-3 p-3 rounded-xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>
                       <div className="flex items-center justify-between gap-6">
                         <div><span className="text-[10px] font-bold uppercase opacity-70">Official Bid</span><p className="text-lg font-black">₹{msg.bid_amount}</p></div>
-                        {!isMe && msg.status !== 'accepted' && msg.bid_status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && (
+                        {!isMe && msg.status !== 'accepted' && msg.bid_status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && !msg.isPending && (
                           <button onClick={(e) => { e.stopPropagation(); handleAccept(msg.id); }} className="px-4 py-2 bg-green-600 text-white text-xs font-bold rounded-lg hover:bg-green-700 transition">Accept</button>
                         )}
                         {(msg.status === 'accepted' || msg.bid_status === 'accepted') && <span className="text-xs font-black text-green-500 uppercase">Accepted ✓</span>}
@@ -576,7 +571,20 @@ export default function ChatRoomPage() {
                   )}
                 </div>
               </div>
-              <span className="text-[10px] text-gray-400 mt-1 mx-1 font-medium">{formatTime(msg.created_at || msg.timestamp)}</span>
+              
+              <div className="flex items-center gap-1 mt-1 mx-1">
+                {/* 🚀 Render Pending Clock Icon */}
+                {msg.isPending ? (
+                  <span className="text-[10px] text-gray-400 font-bold tracking-wider animate-pulse flex items-center gap-1">
+                    <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                    Sending...
+                  </span>
+                ) : (
+                  <span className="text-[10px] text-gray-400 font-medium">
+                    {formatTime(msg.created_at || msg.timestamp)}
+                  </span>
+                )}
+              </div>
             </div>
           );
         })}
@@ -599,7 +607,7 @@ export default function ChatRoomPage() {
           </div>
         ) : (
           <form onSubmit={handleSendMessage} className="space-y-3">
-             {!isSupport && !isGroupOrder && ( // Hide bidding UI inside group orders
+             {!isSupport && !isGroupOrder && ( 
                <div className="flex items-center gap-2 px-1">
                   <input type="checkbox" id="bid" checked={isBidding} onChange={(e) => setIsBidding(e.target.checked)} disabled={isSelectionMode} className="rounded cursor-pointer" />
                   <label htmlFor="bid" className="text-xs font-bold text-gray-600 cursor-pointer select-none">Make an Official Bid</label>

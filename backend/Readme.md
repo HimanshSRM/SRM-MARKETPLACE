@@ -121,3 +121,13 @@ SECRET_KEY="" generate in python
 FIREBASE_STORAGE_BUCKET=""
 SENTRY_DSN=""
 FIREBASE_WEB_API_KEY = ""
+
+
+
+for docker : download docker for desktop
+add docker to envirionment veriables
+docker run --name campus-redis -p 6379:6379 -d redis
+docker exec -it campus-redis redis-cli ping (for checking)
+
+
+using this command arq worker.WorkerSettings run in your local developemnet

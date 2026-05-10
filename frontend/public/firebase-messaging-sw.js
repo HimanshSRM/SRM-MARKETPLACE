@@ -27,3 +27,30 @@ messaging.onBackgroundMessage((payload) => {
 
   self.registration.showNotification(notificationTitle, notificationOptions);
 });
+
+// 2. 🚨 THE FIX: Handles the actual tap action on the lock screen
+self.addEventListener('notificationclick', function(event) {
+  console.log('[firebase-messaging-sw.js] Notification clicked.', event);
+  
+  // Close the native notification popup
+  event.notification.close();
+
+  // Extract the target URL from the payload (default to /inbox if missing)
+  const targetUrl = event.notification.data?.url || '/inbox';
+
+  event.waitUntil(
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      // Scenario A: The user has the PWA open in the background. Focus it and route them.
+      for (const client of clientList) {
+        if (client.url.includes(self.registration.scope) && 'focus' in client) {
+          client.navigate(targetUrl);
+          return client.focus();
+        }
+      }
+      // Scenario B: The PWA is completely closed. Launch it directly to the URL.
+      if (clients.openWindow) {
+        return clients.openWindow(targetUrl);
+      }
+    })
+  );
+});

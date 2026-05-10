@@ -21,6 +21,9 @@ class Settings(BaseSettings):
     gmail_address: str
     brevo_api_key: str
 
+    REDIS_URL: str
+
+
     class Config:
         env_file = str(BASE_DIR / ".env") 
         extra = "ignore"

@@ -1,4 +1,47 @@
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000' || 'http://localhost:8000' ;
+import { auth } from '@/lib/firebase'; // 🚨 Required to get the token dynamically
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000' || 'http://localhost:8000';
+
+/**
+ * 🚨 THE TIMEBOMB DEFUSER
+ * This wrapper automatically handles expired tokens by intercepting 401 errors,
+ * forcing a silent token refresh, and retrying the request instantly.
+ */
+export async function authenticatedFetch(url: string, options: RequestInit = {}) {
+  // 1. Get the current token 
+  let token = await auth.currentUser?.getIdToken();
+
+  if (!token) {
+    throw new Error("Not authenticated. Please log in.");
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`,
+    ...options.headers,
+  };
+
+  // 2. Make the initial request
+  let response = await fetch(url, { ...options, headers });
+
+  // 3. CAUGHT THE TIMEBOMB: The backend rejected our token!
+  if (response.status === 401) {
+    console.warn("⏳ Token expired! Forcing a background refresh...");
+    
+    // Force Firebase to generate a brand new token
+    token = await auth.currentUser?.getIdToken(true);
+    
+    // Retry the exact same request with the fresh token
+    const retryHeaders = {
+      ...headers,
+      'Authorization': `Bearer ${token}`,
+    };
+    
+    response = await fetch(url, { ...options, headers: retryHeaders });
+  }
+
+  return response;
+}
 
 // Add 'guest' to the accepted types and set it as the default
 // 🚨 Add this interface to keep TypeScript happy across the app
@@ -14,16 +57,11 @@ export interface SyncResponse {
 }
 
 export async function syncUserWithBackend(
-  token: string, 
   selectedRole: 'guest' | 'student' | 'shop' = 'guest'
-): Promise<SyncResponse> { // 🚨 Added explicit return type
+): Promise<SyncResponse> { 
   try {
-    const response = await fetch(`${API_URL}/api/users/sync`, {
+    const response = await authenticatedFetch(`${API_URL}/api/users/sync`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`, 
-      },
       body: JSON.stringify({ selected_role: selectedRole }),
     });
 
@@ -40,14 +78,10 @@ export async function syncUserWithBackend(
   }
 }
 
-export async function sendStudentOtp(token: string, email: string) {
+export async function sendStudentOtp(email: string) {
   try {
-    const response = await fetch(`${API_URL}/api/users/send-otp`, {
+    const response = await authenticatedFetch(`${API_URL}/api/users/send-otp`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
       body: JSON.stringify({ srm_email: email }),
     });
 
@@ -63,14 +97,10 @@ export async function sendStudentOtp(token: string, email: string) {
   }
 }
 
-export async function verifyStudentOtp(token: string, email: string, otpCode: string) {
+export async function verifyStudentOtp(email: string, otpCode: string) {
   try {
-    const response = await fetch(`${API_URL}/api/users/verify-otp`, {
+    const response = await authenticatedFetch(`${API_URL}/api/users/verify-otp`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`,
-      },
       body: JSON.stringify({ srm_email: email, otp_code: otpCode }),
     });
 
@@ -96,14 +126,9 @@ export interface ShopApplicationData {
   contact_email: string;
 }
 
-export async function createShopProfile(token: string, shopData: any, overwrite: boolean = false) {
-  // 🚨 Notice it hits /api/shops/create to match your FastAPI backend!
-  const response = await fetch(`${API_URL}/api/shops/create?overwrite=${overwrite}`, {
+export async function createShopProfile(shopData: any, overwrite: boolean = false) {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/create?overwrite=${overwrite}`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
     body: JSON.stringify(shopData)
   });
 
@@ -136,13 +161,11 @@ export interface PaginatedProducts {
 }
 
 export async function getLiveProducts(
-  token: string, 
   limit: number = 15, 
   cursor: string = '', 
   category: string = ''
 ): Promise<PaginatedProducts> {
   try {
-    // 2. Build the URL dynamically with query params
     const baseUrl = `${API_URL}/api/products/live`;
     const params = new URLSearchParams({
       limit: limit.toString(),
@@ -150,24 +173,25 @@ export async function getLiveProducts(
       ...(category && { category }),
     });
 
-    const response = await fetch(`${baseUrl}?${params.toString()}`, {
+    const response = await authenticatedFetch(`${baseUrl}?${params.toString()}`, {
       method: 'GET',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`, 
-      },
       cache: 'no-store' 
     });
 
     if (!response.ok) {
       const errorData = await response.json().catch(() => null);
-      throw new Error(errorData?.detail || `Backend error: ${response.status}`);
+      
+      // 🚨 Formats FastAPI 422 Array errors into readable text instead of [object Object]
+      const errorMessage = errorData?.detail 
+        ? (typeof errorData.detail === 'string' ? errorData.detail : JSON.stringify(errorData.detail)) 
+        : `Backend error: ${response.status}`;
+        
+      throw new Error(errorMessage);
     }
 
     const rawData = await response.json(); 
 
     // 3. 🛡️ API LAYER NORMALIZATION
-    // We want to ensure we return the standardized PaginatedProducts object
     let normalizedData: Product[] = [];
     let nextCursor: string | null = rawData.next_cursor || null;
 
@@ -200,14 +224,10 @@ export interface CreateProductPayload {
   image_url?: string; // Optional for now until we hook up cloud storage
 }
 
-export async function createProduct(token: string, productData: CreateProductPayload) {
+export async function createProduct(productData: CreateProductPayload) {
   try {
-    const response = await fetch(`${API_URL}/api/products/create`, {
+    const response = await authenticatedFetch(`${API_URL}/api/products/create`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`, 
-      },
       body: JSON.stringify(productData),
     });
 
@@ -257,19 +277,14 @@ export interface InboxData {
   support: any[];
 }
 
-// 1. Initiate Bid Chat (Updated to match FastAPI schema)
+// 1. Initiate Bid Chat
 export async function initiateChat(
-  token: string, 
   listingId: string | number,
   ownerId: string,
   initialMessage: string
 ): Promise<ChatRoom> {
-  const response = await fetch(`${API_URL}/api/chat/initiate`, {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/initiate`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
     body: JSON.stringify({ 
       listing_id: listingId,            
       owner_id: ownerId,            
@@ -289,12 +304,9 @@ export async function initiateChat(
 }
 
 // 2. Get User Inbox
-export async function getInbox(token: string): Promise<InboxData> {
-  const response = await fetch(`${API_URL}/api/chat/inbox`, {
+export async function getInbox(): Promise<InboxData> {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/inbox`, {
     method: 'GET',
-    headers: { 
-      'Authorization': `Bearer ${token}` 
-    },
     cache: 'no-store',
   });
 
@@ -316,25 +328,18 @@ export async function getInbox(token: string): Promise<InboxData> {
 }
 
 // 3. Send Message / Bid
-// Inside src/lib/api.ts
-
 export async function sendMessage(
-  token: string, 
   roomId: string | number, 
-  senderId: string,       // 🚨 NEW: FastAPI requires the sender's ID
-  text: string,           // 🚨 CHANGED: Renamed from 'content' to 'text'
+  senderId: string,       
+  text: string,           
   isBid: boolean = false, 
   bidAmount?: number
 ): Promise<ChatMessage> {
-  const response = await fetch(`${API_URL}/api/chat/${roomId}/messages`, {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/${roomId}/messages`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`,
-    },
     body: JSON.stringify({ 
-      sender_id: senderId, // 🚨 Sending what FastAPI asked for
-      text: text,          // 🚨 Sending what FastAPI asked for
+      sender_id: senderId, 
+      text: text,          
       is_bid: isBid, 
       bid_amount: bidAmount || null 
     }),
@@ -351,16 +356,12 @@ export async function sendMessage(
 }
 
 // 4. Accept Bid
-export async function acceptBid(token: string, roomId: string | number, messageId: string | number) {
-  const response = await fetch(`${API_URL}/api/chat/${roomId}/messages/${messageId}/accept`, {
+export async function acceptBid(roomId: string | number, messageId: string | number) {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/${roomId}/messages/${messageId}/accept`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-    },
   });
 
   if (!response.ok) {
-    // 🛠️ NEW: Catch exact backend errors (e.g., "Bid already accepted" or 422s)
     const errorData = await response.json().catch(() => null);
     console.error("🚨 FastAPI Error (acceptBid):", JSON.stringify(errorData, null, 2));
     throw new Error(
@@ -373,11 +374,9 @@ export async function acceptBid(token: string, roomId: string | number, messageI
 }
 
 // 5. Get Messages for a specific Room
-
-export async function getChatMessages(token: string, roomId: string | number): Promise<{ room: any, messages: ChatMessage[] }> {
-  const response = await fetch(`${API_URL}/api/chat/${roomId}/messages`, {
+export async function getChatMessages(roomId: string | number): Promise<{ room: any, messages: ChatMessage[] }> {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/${roomId}/messages`, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${token}` },
     cache: 'no-store',
   });
 
@@ -391,7 +390,7 @@ export async function getChatMessages(token: string, roomId: string | number): P
 
   // Safely extract messages AND the room metadata
   let messages: ChatMessage[] = [];
-  let room: any = data.room || data; // Fallback depending on your exact FastAPI JSON shape
+  let room: any = data.room || data; 
 
   if (data.messages && Array.isArray(data.messages)) messages = data.messages;
   else if (data.data && Array.isArray(data.data)) messages = data.data;
@@ -401,7 +400,6 @@ export async function getChatMessages(token: string, roomId: string | number): P
 }
 
 
-
 // ==========================================
 // SHOPS API
 // ==========================================
@@ -409,21 +407,15 @@ export async function getChatMessages(token: string, roomId: string | number): P
 export interface Shop {
   id: string;
   owner_id: string;
-  
-  // 🚨 Add these two new fields from the backend
   owner_email?: string;
   status?: string;
-  
   shop_name?: string; 
   name?: string; 
-  
   description: string;
   location?: string;
-  
   contact_number?: string; 
   contact_email?: string;
   contact_info?: string; 
-  
   is_verified: boolean;
   created_at: string;
 }
@@ -439,11 +431,10 @@ export interface CatalogItem {
 }
 
 // 1. Get All Verified Shops (Public)
-export async function getLiveShops(token: string): Promise<Shop[]> {
-  const response = await fetch(`${API_URL}/api/shops/live`, {
+export async function getLiveShops(): Promise<Shop[]> {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/live`, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${token}` },
-    cache: 'no-store', // Always get fresh data
+    cache: 'no-store', 
   });
 
   if (!response.ok) throw new Error('Failed to load shops');
@@ -452,10 +443,9 @@ export async function getLiveShops(token: string): Promise<Shop[]> {
 }
 
 // 2. Get a Specific Shop's Catalog (Public)
-export async function getShopCatalog(token: string, shopId: string): Promise<CatalogItem[]> {
-  const response = await fetch(`${API_URL}/api/shops/${shopId}/catalog`, {
+export async function getShopCatalog(shopId: string): Promise<CatalogItem[]> {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/${shopId}/catalog`, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${token}` },
     cache: 'no-store',
   });
 
@@ -464,16 +454,10 @@ export async function getShopCatalog(token: string, shopId: string): Promise<Cat
   return Array.isArray(data) ? data : data.data || [];
 }
 
-
-
 // 4. Add an Item to Shop Catalog (Private)
-export async function addCatalogItem(token: string, itemData: any): Promise<CatalogItem> {
-  const response = await fetch(`${API_URL}/api/shops/catalog/add`, {
+export async function addCatalogItem(itemData: any): Promise<CatalogItem> {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/catalog/add`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify(itemData),
   });
 
@@ -481,13 +465,9 @@ export async function addCatalogItem(token: string, itemData: any): Promise<Cata
   return await response.json();
 }
 
-export async function updateCatalogItem(token: string, itemId: string, payload: any): Promise<CatalogItem> {
-  const response = await fetch(`${API_URL}/api/shops/catalog/${itemId}`, {
-    method: 'PUT', // Using PUT for updates
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+export async function updateCatalogItem(itemId: string, payload: any): Promise<CatalogItem> {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/catalog/${itemId}`, {
+    method: 'PUT', 
     body: JSON.stringify(payload),
   });
 
@@ -500,12 +480,9 @@ export async function updateCatalogItem(token: string, itemId: string, payload: 
 }
 
 // Delete a catalog item
-export async function deleteCatalogItem(token: string, itemId: string): Promise<void> {
-  const response = await fetch(`${API_URL}/api/shops/catalog/${itemId}`, {
+export async function deleteCatalogItem(itemId: string): Promise<void> {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/catalog/${itemId}`, {
     method: 'DELETE',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-    },
   });
 
   if (!response.ok) {
@@ -515,16 +492,11 @@ export async function deleteCatalogItem(token: string, itemId: string): Promise<
 }
 
 export async function updateShopProfile(
-  token: string, 
   shopId: string, 
   updateData: { shop_name?: string; description?: string; phone_number?: string; location?: string }
 ) {
-  const response = await fetch(`${API_URL}/api/shops/${shopId}/profile`, {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/${shopId}/profile`, {
     method: 'PUT',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
     body: JSON.stringify(updateData)
   });
 
@@ -542,10 +514,9 @@ export async function updateShopProfile(
 // ==========================================
 
 // 1. Get Pending Shops
-export async function getPendingShops(token: string): Promise<Shop[]> {
-  const response = await fetch(`${API_URL}/api/admin/shops/pending`, {
+export async function getPendingShops(): Promise<Shop[]> {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/shops/pending`, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${token}` },
     cache: 'no-store',
   });
 
@@ -555,10 +526,9 @@ export async function getPendingShops(token: string): Promise<Shop[]> {
 }
 
 // 2. Verify Shop
-export async function verifyShop(token: string, shopId: string): Promise<any> {
-  const response = await fetch(`${API_URL}/api/admin/shops/${shopId}/verify`, {
+export async function verifyShop(shopId: string): Promise<any> {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/shops/${shopId}/verify`, {
     method: 'PUT',
-    headers: { 'Authorization': `Bearer ${token}` },
   });
 
   if (!response.ok) throw new Error('Failed to verify shop');
@@ -566,14 +536,10 @@ export async function verifyShop(token: string, shopId: string): Promise<any> {
 }
 
 // 3. Reject Shop
-export async function rejectShop(token: string, shopId: string, reason: string): Promise<any> {
-  const response = await fetch(`${API_URL}/api/admin/shops/${shopId}/reject`, {
+export async function rejectShop(shopId: string, reason: string): Promise<any> {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/shops/${shopId}/reject`, {
     method: 'PUT',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ reason }), // Matches your RejectRequest schema!
+    body: JSON.stringify({ reason }), 
   });
 
   if (!response.ok) throw new Error('Failed to reject shop');
@@ -582,36 +548,30 @@ export async function rejectShop(token: string, shopId: string, reason: string):
 
 
 // --- USERS ---
-export async function searchUserByEmail(token: string, email: string) {
-  const response = await fetch(`${API_URL}/api/admin/users/search?email=${encodeURIComponent(email)}`, {
-    headers: { 'Authorization': `Bearer ${token}` },
+export async function searchUserByEmail(email: string) {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/users/search?email=${encodeURIComponent(email)}`, {
+    method: 'GET',
   });
   if (!response.ok) throw new Error('User not found');
   return await response.json();
 }
 
-export async function setUserRole(token: string, uid: string, role: string) {
-  const response = await fetch(`${API_URL}/api/admin/users/${uid}/role`, {
+export async function setUserRole(uid: string, role: string) {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/users/${uid}/role`, {
     method: 'PUT',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ role }),
   });
   if (!response.ok) throw new Error('Failed to update user role');
   return await response.json();
 }
 
-export async function checkMyShop(token: string) {
-  const response = await fetch(`${API_URL}/api/shops/me`, {
+export async function checkMyShop() {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/me`, {
     method: 'GET',
-    headers: { 'Authorization': `Bearer ${token}` }
   });
   if (!response.ok) return { has_shop: false };
   return await response.json();
 }
-
 
 
 // ==========================================
@@ -619,14 +579,9 @@ export async function checkMyShop(token: string) {
 // ==========================================
 
 // 1. Student Action: Report an inappropriate listing
-export async function reportListing(token: string, listingId: string, reason: string, details: string = "") {
-  // 🚨 ADDED /admin to the URL path here
-  const response = await fetch(`${API_URL}/api/admin/listings/${listingId}/report`, {
+export async function reportListing(listingId: string, reason: string, details: string = "") {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/listings/${listingId}/report`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ reason, details }),
   });
   
@@ -639,19 +594,13 @@ export async function reportListing(token: string, listingId: string, reason: st
 
 // 2. Admin Action: 3-Tier Moderation (Warn, Hide, Delete)
 export async function moderateListing(
-  token: string, 
   listingId: string, 
   action: 'warn' | 'hide' | 'delete' | 'restore', 
   reason: string ,
   shopId?: string
 ) {
-  // 🚨 ADDED /admin to the URL path here
-  const response = await fetch(`${API_URL}/api/admin/listings/${listingId}/moderate`, {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/listings/${listingId}/moderate`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ action, reason , shop_id: shopId }),
   });
   
@@ -664,13 +613,9 @@ export async function moderateListing(
 
 
 // 3. Student Action: Report a Shop Catalog Item
-export async function reportShopItem(token: string, shopId: string, itemId: string, reason: string, details: string = "") {
-  const response = await fetch(`${API_URL}/api/shops/${shopId}/catalog/${itemId}/report`, {
+export async function reportShopItem(shopId: string, itemId: string, reason: string, details: string = "") {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/${shopId}/catalog/${itemId}/report`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ reason, details }),
   });
   
@@ -684,14 +629,9 @@ export async function reportShopItem(token: string, shopId: string, itemId: stri
 
 
 // --- SUPPORT TICKETS ---
-// 🚨 THE NEW UNIFIED TICKETS ROUTE
-export async function getAllSupportTickets(token: string) {
-  const response = await fetch(`${API_URL}/api/admin/tickets`, {
+export async function getAllSupportTickets() {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/tickets`, {
     method: 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    }
   });
 
   if (!response.ok) {
@@ -699,18 +639,12 @@ export async function getAllSupportTickets(token: string) {
   }
   
   const result = await response.json();
-  // Safely return the array whether it's wrapped in { data: [...] } or just [...]
   return Array.isArray(result) ? result : result.data || []; 
 }
 
-// (You can leave this here just in case any older parts of your app still use it)
-export async function replyToTicket(token: string, ticketId: string, status: string, admin_response: string) {
-  const response = await fetch(`${API_URL}/api/support/admin/${ticketId}/reply`, {
+export async function replyToTicket(ticketId: string, status: string, admin_response: string) {
+  const response = await authenticatedFetch(`${API_URL}/api/support/admin/${ticketId}/reply`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ status, admin_response }),
   });
   if (!response.ok) throw new Error('Failed to reply to ticket');
@@ -718,13 +652,9 @@ export async function replyToTicket(token: string, ticketId: string, status: str
 }
 
 // Generic Warning Tool (No specific listing)
-export async function warnUser(token: string, targetUid: string, subject: string, message: string) {
-  const response = await fetch(`${API_URL}/api/admin/warn/${targetUid}`, {
+export async function warnUser(targetUid: string, subject: string, message: string) {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/warn/${targetUid}`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ subject, message }),
   });
   
@@ -736,22 +666,15 @@ export async function warnUser(token: string, targetUid: string, subject: string
 }
 
 
-
 // ==========================================
 // SUPPORT API (USER FACING)
 // ==========================================
 
-export async function createSupportTicket(token: string, payload: { subject: string, message?: string, description?: string }) {
-  
-  // Safely map 'description' to 'message' just in case an older page uses the old format
+export async function createSupportTicket(payload: { subject: string, message?: string, description?: string }) {
   const finalMessage = payload.message || payload.description || "No message provided.";
 
-  const response = await fetch(`${API_URL}/api/chat/support/ticket`, {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/support/ticket`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
     body: JSON.stringify({ 
       subject: payload.subject, 
       message: finalMessage 
@@ -765,28 +688,27 @@ export async function createSupportTicket(token: string, payload: { subject: str
   return await response.json();
 }
 
-export async function getMyTickets(token: string) {
-  const response = await fetch(`${API_URL}/api/support/my-tickets`, {
-    headers: { 'Authorization': `Bearer ${token}` },
+export async function getMyTickets() {
+  const response = await authenticatedFetch(`${API_URL}/api/support/my-tickets`, {
+    method: 'GET',
   });
   if (!response.ok) throw new Error('Failed to load tickets');
   const data = await response.json();
   return Array.isArray(data) ? data : data.data || [];
 }
 
-export async function resolveSupportTicket(token: string, ticketId: string | number) {
-  const response = await fetch(`${API_URL}/api/support/admin/${ticketId}/resolve`, {
+export async function resolveSupportTicket(ticketId: string | number) {
+  const response = await authenticatedFetch(`${API_URL}/api/support/admin/${ticketId}/resolve`, {
     method: 'PUT',
-    headers: { 'Authorization': `Bearer ${token}` },
   });
   if (!response.ok) throw new Error('Failed to resolve ticket');
   return await response.json();
 }
 
 
-export async function getAllUsers(token: string) {
-  const response = await fetch(`${API_URL}/api/admin/users`, {
-    headers: { 'Authorization': `Bearer ${token}` },
+export async function getAllUsers() {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/users`, {
+    method: 'GET',
   });
   if (!response.ok) throw new Error('Failed to load users');
   const data = await response.json();
@@ -799,12 +721,9 @@ export async function getAllUsers(token: string) {
 // 🎓 STUDENT DASHBOARD & PROFILE
 // ==========================================
 
-export async function getStudentDashboard(token: string) {
-  const response = await fetch(`${API_URL}/api/users/dashboard/student`, {
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+export async function getStudentDashboard() {
+  const response = await authenticatedFetch(`${API_URL}/api/users/dashboard/student`, {
+    method: 'GET',
   });
 
   if (!response.ok) {
@@ -814,10 +733,9 @@ export async function getStudentDashboard(token: string) {
   return await response.json();
 }
 
-export async function deleteMyListing(token: string, listingId: string) {
-  const response = await fetch(`${API_URL}/api/products/${listingId}`, {
+export async function deleteMyListing(listingId: string) {
+  const response = await authenticatedFetch(`${API_URL}/api/products/${listingId}`, {
     method: 'DELETE',
-    headers: { 'Authorization': `Bearer ${token}` },
   });
   
   if (!response.ok) {
@@ -827,13 +745,9 @@ export async function deleteMyListing(token: string, listingId: string) {
 }
 
 
-export async function updateMyListing(token: string, listingId: string, updateData: any) {
-  const response = await fetch(`${API_URL}/api/products/${listingId}`, {
+export async function updateMyListing(listingId: string, updateData: any) {
+  const response = await authenticatedFetch(`${API_URL}/api/products/${listingId}`, {
     method: 'PUT',
-    headers: { 
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
     body: JSON.stringify(updateData),
   });
   
@@ -842,18 +756,15 @@ export async function updateMyListing(token: string, listingId: string, updateDa
     throw new Error(errorData?.detail || 'Failed to update listing');
   }
   return await response.json();
-
 }
 
 
 
 //Guest Dashboard 
 
-export async function getGuestDashboard(token: string) {
-  const response = await fetch(`${API_URL}/api/dashboard/guest`, {
-    headers: {
-      'Authorization': `Bearer ${token}`
-    }
+export async function getGuestDashboard() {
+  const response = await authenticatedFetch(`${API_URL}/api/dashboard/guest`, {
+    method: 'GET',
   });
   
   if (!response.ok) {
@@ -863,21 +774,14 @@ export async function getGuestDashboard(token: string) {
 }
 
 
-// Add to src/lib/api.ts
-
 export async function moderateUser(
-  token: string, 
   uid: string, 
   action: 'warn' | 'ban' | 'restore' | 'nuke', 
   reason: string,
   roomId: string
 ) {
-  const response = await fetch(`${API_URL}/api/admin/users/${uid}/moderate`, {
+  const response = await authenticatedFetch(`${API_URL}/api/admin/users/${uid}/moderate`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${token}`
-    },
     body: JSON.stringify({ action, reason, room_id: roomId })
   });
 
@@ -891,13 +795,9 @@ export async function moderateUser(
 
 
 // Delete multiple messages from a chat room
-export async function deleteChatMessages(token: string, roomId: string | number, messageIds: string[]) {
-  const response = await fetch(`${API_URL}/api/chat/${roomId}/messages/bulk-delete`, {
+export async function deleteChatMessages(roomId: string | number, messageIds: string[]) {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/${roomId}/messages/bulk-delete`, {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({ message_ids: messageIds }),
   });
 
@@ -909,13 +809,9 @@ export async function deleteChatMessages(token: string, roomId: string | number,
 }
 
 
-export async function hideChatRoom(token: string, roomId: string | number) {
-  const response = await fetch(`${API_URL}/api/chat/${roomId}/hide`, {
+export async function hideChatRoom(roomId: string | number) {
+  const response = await authenticatedFetch(`${API_URL}/api/chat/${roomId}/hide`, {
     method: 'PUT',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Content-Type': 'application/json'
-    },
   });
 
   if (!response.ok) {
@@ -927,10 +823,9 @@ export async function hideChatRoom(token: string, roomId: string | number) {
 
 
 // 🚨 NEW: Safely restore a shop without deleting the catalog
-export async function restoreShopProfile(token: string) {
-  const response = await fetch(`${API_URL}/api/shops/restore`, {
+export async function restoreShopProfile() {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/restore`, {
     method: 'POST',
-    headers: { 'Authorization': `Bearer ${token}` }
   });
 
   if (!response.ok) {
@@ -945,21 +840,20 @@ export async function restoreShopProfile(token: string) {
 // GROUP ORDERS (CART POOLING) APIs
 // ==========================================
 
-export const getActiveGroupOrders = async (token: string) => {
-  const res = await fetch(`${API_URL}/api/pools`, {
-    headers: { Authorization: `Bearer ${token}` }
+export const getActiveGroupOrders = async () => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools`, {
+    method: 'GET',
   });
   if (!res.ok) {
     const error = await res.json();
     throw new Error(error.detail || "Failed to fetch active group orders");
   }
-  return res.json(); // Returns a list of active pools
+  return res.json(); 
 };
 
-export const createGroupOrder = async (token: string, orderData: { app_name: string, pickup_location: string, contact_number: string, expires_in_minutes: number, upi_id: string }) => {
-  const res = await fetch(`${API_URL}/api/pools`, {
+export const createGroupOrder = async (orderData: { app_name: string, pickup_location: string, contact_number: string, expires_in_minutes: number, upi_id: string }) => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify(orderData)
   });
   if (!res.ok) throw new Error("Failed to create group order");
@@ -967,16 +861,11 @@ export const createGroupOrder = async (token: string, orderData: { app_name: str
 };
 
 export const joinGroupOrder = async (
-  token: string, 
   poolId: string, 
   payload: { contact_number: string, block: string, items: { item_name: string, quantity: number, estimated_price: number }[] }
 ) => {
-  const res = await fetch(`${API_URL}/api/pools/${poolId}/join`, {
+  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/join`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`
-    },
     body: JSON.stringify(payload)
   });
   
@@ -987,10 +876,9 @@ export const joinGroupOrder = async (
   return res.json();
 };
 
-export const updateGroupOrderStatus = async (token: string, poolId: string, status: 'locked' | 'delivered' | 'cancelled', deliveryFee: number = 0) => {
-  const res = await fetch(`${API_URL}/api/pools/${poolId}/status`, {
+export const updateGroupOrderStatus = async (poolId: string, status: 'locked' | 'delivered' | 'cancelled', deliveryFee: number = 0) => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/status`, {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     body: JSON.stringify({ status, delivery_fee: deliveryFee })
   });
   if (!res.ok) throw new Error("Failed to update order status");
@@ -998,10 +886,9 @@ export const updateGroupOrderStatus = async (token: string, poolId: string, stat
 };
 
 
-export const kickParticipant = async (token: string, poolId: string, userId: string) => {
-  const res = await fetch(`${API_URL}/api/pools/${poolId}/participants/${userId}`, {
+export const kickParticipant = async (poolId: string, userId: string) => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/participants/${userId}`, {
     method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` }
   });
   if (!res.ok) {
     const error = await res.json();
@@ -1011,10 +898,9 @@ export const kickParticipant = async (token: string, poolId: string, userId: str
 };    
 
 
-export const settleGroupOrder = async (token: string, poolId: string) => {
-  const res = await fetch(`${API_URL}/api/pools/${poolId}/settle`, {
+export const settleGroupOrder = async (poolId: string) => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/settle`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
   });
   if (!res.ok) {
     const error = await res.json();
