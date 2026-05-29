@@ -26,8 +26,10 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const [showJoinModal, setShowJoinModal] = useState<GroupOrder | null>(null); 
   const [showManageModal, setShowManageModal] = useState<GroupOrder | null>(null); 
   
-  const [myPools, setMyPools] = useState<GroupOrder[]>([]);
+  const [myActivePools, setMyActivePools] = useState<GroupOrder[]>([]);
   const [discoverPools, setDiscoverPools] = useState<GroupOrder[]>([]);
+  const [pastPools, setPastPools] = useState<GroupOrder[]>([]);
+  
   const [isLoading, setIsLoading] = useState(true);
 
   const fetchOrders = async (showSpinner = true) => {
@@ -36,27 +38,27 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
       const data = await getActiveGroupOrders();
       
       const mine = data.filter((o: GroupOrder) => 
-        (
-          o.host_id === currentUser.uid || 
-          o.participant_ids?.includes(currentUser.uid) || 
-          o.participants?.some(p => p.user_id === currentUser.uid)
-        ) 
-        && o.status !== 'cancelled' 
-        && o.status !== 'settled'
+        o.host_id === currentUser.uid || 
+        o.participant_ids?.includes(currentUser.uid) || 
+        o.participants?.some(p => p.user_id === currentUser.uid)
       );
 
-      const discover = data.filter((o: GroupOrder) => 
-        o.status === 'open' 
-        && o.host_id !== currentUser.uid 
-        && !o.participant_ids?.includes(currentUser.uid) 
-      );
+      // BUCKET 1: Active
+      setMyActivePools(mine.filter((o: GroupOrder) => o.status === 'open' || o.status === 'locked'));
       
-      setMyPools(mine);
-      setDiscoverPools(discover);
+      // BUCKET 2: Past
+      setPastPools(mine.filter((o: GroupOrder) => o.status === 'delivered' || o.status === 'cancelled' || o.status === 'settled'));
+
+      // BUCKET 3: Discover
+      setDiscoverPools(data.filter((o: GroupOrder) => 
+        o.status === 'open' && 
+        o.host_id !== currentUser.uid && 
+        !o.participant_ids?.includes(currentUser.uid) 
+      ));
       
       if (showManageModal) {
         const updatedOrder = data.find((o: GroupOrder) => o.id === showManageModal.id);
-        if (updatedOrder && updatedOrder.status !== 'cancelled' && updatedOrder.status !== 'settled') {
+        if (updatedOrder) {
           setShowManageModal(updatedOrder);
         } else {
           setShowManageModal(null); 
@@ -78,13 +80,10 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
     let timeoutId: NodeJS.Timeout;
     const q = collection(db, 'group_orders');
     
-    // Debounced listener prevents infinite API loops
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (!snapshot.metadata.hasPendingWrites) {
          clearTimeout(timeoutId);
-         timeoutId = setTimeout(() => {
-           fetchOrders(false);
-         }, 2000); 
+         timeoutId = setTimeout(() => { fetchOrders(false); }, 2000); 
       }
     });
 
@@ -95,9 +94,8 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   }, [currentUser]);
 
   return (
-    <div className="space-y-8 animate-fade-in-up">
+    <div className="space-y-10 animate-fade-in-up">
       
-      {/* Hero Banner */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-purple-50 p-6 rounded-3xl border border-purple-100 shadow-sm gap-4">
         <div>
           <h2 className="text-xl font-black text-purple-900">Cart Pooling</h2>
@@ -112,11 +110,7 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
           >
             <svg className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
           </button>
-          
-          <button 
-            onClick={() => setShowCreateModal(true)} 
-            className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition"
-          >
+          <button onClick={() => setShowCreateModal(true)} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition">
             + Start an Order
           </button>
         </div>
@@ -126,15 +120,17 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         <div className="text-center py-10"><div className="w-8 h-8 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin mx-auto"></div></div>
       ) : (
         <>
-          {myPools.length > 0 && (
+          {/* 1. MY ACTIVE POOLS */}
+          {myActivePools.length > 0 && (
             <div>
               <h3 className="text-lg font-black text-gray-900 mb-4 flex items-center gap-2">🛒 My Active Pools</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {myPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
+                {myActivePools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
               </div>
             </div>
           )}
 
+          {/* 2. DISCOVER CAMPUS ORDERS */}
           <div>
             <h3 className="text-lg font-black text-gray-900 mb-4 flex items-center gap-2">🔍 Discover Campus Orders</h3>
             {discoverPools.length === 0 ? (
@@ -145,10 +141,19 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
               </div>
             )}
           </div>
+
+          {/* 3. PAST ORDERS */}
+          {pastPools.length > 0 && (
+            <div className="pt-8 border-t border-gray-200">
+              <h3 className="text-lg font-black text-gray-400 mb-4 flex items-center gap-2">🕰️ Past Orders</h3>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {pastPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
+              </div>
+            </div>
+          )}
         </>
       )}
 
-      {/* Modals */}
       {showCreateModal && <CreateOrderModal profile={profile} onClose={() => setShowCreateModal(false)} onSuccess={() => { setShowCreateModal(false); fetchOrders(true); }} />}
       {showJoinModal && <JoinOrderModal profile={profile} currentUser={currentUser} order={showJoinModal} onClose={() => setShowJoinModal(null)} router={router} onRefresh={() => fetchOrders(true)} />}
       {showManageModal && <ManageOrderModal order={showManageModal} currentUser={currentUser} onClose={() => setShowManageModal(null)} onRefresh={() => fetchOrders(true)} />}
@@ -161,16 +166,42 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
 // ==========================================
 function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, router }: any) {
   const [timeLeft, setTimeLeft] = useState('');
-  const [isExpired, setIsExpired] = useState(order.status !== 'open');
+  
   const isHost = currentUser?.uid === order.host_id;
   const hasJoined = !isHost && order.participant_ids?.includes(currentUser?.uid);
+  
+  const isPast = ['delivered', 'cancelled', 'settled'].includes(order.status);
+  const isDiscover = !isHost && !hasJoined && order.status === 'open';
+  const isExpired = order.status !== 'open';
+
+  // 🚨 FORMAT THE TIMESTAMP
+  const formatOrderTime = (dateString: string) => {
+    if (!dateString) return '';
+    const d = new Date(dateString);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const appNameLower = order.app_name?.toLowerCase() || '';
+  let brandBadge = 'bg-gray-100 text-gray-600';
+  let leftBorder = 'border-l-gray-300';
+  
+  if (appNameLower.includes('blinkit')) {
+    brandBadge = 'bg-yellow-100 text-yellow-800';
+    leftBorder = 'border-l-[#F8CB46]';
+  } else if (appNameLower.includes('zepto')) {
+    brandBadge = 'bg-purple-100 text-purple-800';
+    leftBorder = 'border-l-[#3C006B]';
+  } else if (appNameLower.includes('swiggy')) {
+    brandBadge = 'bg-orange-100 text-orange-800';
+    leftBorder = 'border-l-[#FC8019]';
+  }
 
   useEffect(() => {
-    if (order.status !== 'open') { setTimeLeft('Locked'); setIsExpired(true); return; }
+    if (order.status !== 'open') { setTimeLeft('Locked'); return; }
     
     const interval = setInterval(() => {
       const distance = new Date(order.expires_at).getTime() - new Date().getTime();
-      if (distance < 0) { clearInterval(interval); setTimeLeft('Time is up!'); setIsExpired(true); } 
+      if (distance < 0) { clearInterval(interval); setTimeLeft('Time is up!'); } 
       else {
         const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
         const s = Math.floor((distance % (1000 * 60)) / 1000);
@@ -182,13 +213,11 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
 
   const updateStatus = async (newStatus: 'locked' | 'delivered') => {
     let fee = order.delivery_fee || 0;
-    
     if (newStatus === 'locked') {
       const input = window.prompt("What is the final Delivery + Surge fee? (We will split this evenly. Enter 0 if none)", "0");
       if (input === null) return; 
       fee = parseFloat(input) || 0;
     }
-
     try {
       await updateGroupOrderStatus(order.id, newStatus, fee); 
       onRefresh();
@@ -198,53 +227,80 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
     }
   };
 
+  let statusText = isExpired ? 'Locked' : timeLeft;
+  if (order.status === 'delivered') statusText = 'Arrived!';
+  if (order.status === 'cancelled') statusText = 'Cancelled';
+  if (order.status === 'settled') statusText = 'Settled';
+
   return (
-    <div className={`bg-white p-5 rounded-2xl border shadow-sm transition flex flex-col ${order.status === 'delivered' ? 'border-green-200 bg-green-50/30' : 'border-gray-200'}`}>
+    // 🚨 FULL COLORS RETURN: Beautiful white cards, vibrant badges, distinct borders
+    <div className={`bg-white p-5 rounded-2xl border-y border-r border-l-4 shadow-sm hover:shadow-md transition flex flex-col ${leftBorder} border-y-gray-100 border-r-gray-100`}>
+      
       <div className="flex justify-between items-start mb-3">
         <div>
-          <span className="px-3 py-1 bg-yellow-100 text-yellow-800 text-[10px] font-black uppercase tracking-widest rounded-lg">{order.app_name}</span>
+          <span className={`px-3 py-1 text-[10px] font-black uppercase tracking-widest rounded-lg ${brandBadge}`}>
+            {order.app_name}
+          </span>
           
-          <div className="flex items-center gap-2 mt-2">
-            <h3 className="text-lg font-bold text-gray-900">{order.host_name}'s Order</h3>
+          <div className="flex items-center gap-3 mt-3">
+            <div className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-black text-sm shrink-0 uppercase">
+              {order.host_name ? order.host_name.charAt(0) : 'U'}
+            </div>
             
-            {!isHost && order.contact_number && (
-              <div className="flex gap-1.5 ml-2">
-                <a 
-                  href={`https://wa.me/91${order.contact_number.replace(/\D/g, '')}?text=${encodeURIComponent(`Hey ${order.host_name}, I saw your ${order.app_name} group order on the SRM Marketplace!`)}`} 
-                  target="_blank" 
-                  rel="noopener noreferrer" 
-                  className="p-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition" 
-                  title={`WhatsApp ${order.host_name}`}
-                >
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-bold text-gray-900 leading-none">
+                  {order.host_name}'s Order
+                </h3>
+                {/* 🚨 SLEEK HOST BADGE: Tiny, clean, elegant */}
+                {isHost && <span className="text-[10px] text-yellow-700 bg-yellow-100 px-1.5 py-0.5 rounded font-black border border-yellow-200" title="You are the host">👑 Host</span>}
+              </div>
+              {/* 🚨 EXACT TIMESTAMP ADDED */}
+              <span className="text-[10px] text-gray-400 font-medium mt-1">🕒 {formatOrderTime(order.expires_at)}</span>
+            </div>
+
+            {!isHost && hasJoined && !isPast && order.contact_number && (
+              <div className="flex gap-1.5 ml-1">
+                <a href={`https://wa.me/91${order.contact_number.replace(/\D/g, '')}?text=${encodeURIComponent(`Hey ${order.host_name}, regarding the ${order.app_name} group order!`)}`} target="_blank" rel="noopener noreferrer" className="p-1.5 bg-green-100 text-green-700 rounded-lg hover:bg-green-200 transition" title={`WhatsApp ${order.host_name}`}>
                   <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51a12.8 12.8 0 00-.57-.01c-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>
                 </a>
-                <a 
-                  href={`tel:+91${order.contact_number.replace(/\D/g, '')}`} 
-                  className="p-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition" 
-                  title={`Call ${order.host_name}`}
-                >
+                <a href={`tel:+91${order.contact_number.replace(/\D/g, '')}`} className="p-1.5 bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 transition" title={`Call ${order.host_name}`}>
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" /></svg>
                 </a>
               </div>
             )}
           </div>
-          <p className="text-xs text-gray-500 font-medium mt-1">📍 Meet at: {order.pickup_location}</p>
+          
+          {isDiscover ? (
+            <div className="flex items-center gap-2 mt-3">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-green-500"></span>
+              </span>
+              <span className="text-xs font-black text-green-600 uppercase tracking-widest">Accepting Joiners</span>
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500 font-medium mt-2">📍 Meet at: {order.pickup_location}</p>
+          )}
         </div>
-        <div className={`text-right ${order.status === 'delivered' ? 'text-green-600' : (isExpired ? 'text-red-500' : 'text-blue-600')}`}>
+
+        <div className={`text-right ${isPast ? 'text-gray-400' : (isExpired ? 'text-red-500' : 'text-blue-600')}`}>
           <span className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-            {order.status === 'delivered' ? 'Status' : 'Ordering In'}
+            {isPast ? 'Status' : 'Ordering In'}
           </span>
-          <span className="text-xl font-black tabular-nums">{order.status === 'delivered' ? 'Arrived!' : timeLeft}</span>
+          <span className={`text-xl font-black tabular-nums ${order.status === 'delivered' ? 'text-green-600' : ''}`}>
+            {statusText}
+          </span>
         </div>
       </div>
 
       {!isHost && hasJoined && order.delivery_fee !== undefined && order.delivery_fee > 0 && (
-        <div className="mt-2 mb-2 bg-purple-50 p-3 rounded-xl border border-purple-100 flex justify-between items-center text-xs">
+        <div className={`mt-2 mb-2 p-3 rounded-xl flex justify-between items-center text-xs ${isPast ? 'bg-gray-50 border border-gray-100' : 'bg-purple-50 border border-purple-100'}`}>
           <div>
-            <span className="text-purple-600 block mb-0.5 font-medium">Total App Fee: ₹{order.delivery_fee}</span>
-            <span className="font-black text-purple-900 block text-sm">Your Split: +₹{Math.ceil(order.delivery_fee / (order.participants.length + 1))}</span>
+            <span className={`${isPast ? 'text-gray-500' : 'text-purple-600'} block mb-0.5 font-medium`}>Total App Fee: ₹{order.delivery_fee}</span>
+            <span className={`font-black block text-sm ${isPast ? 'text-gray-700' : 'text-purple-900'}`}>Your Split: +₹{Math.ceil(order.delivery_fee / (order.participants.length + 1))}</span>
           </div>
-          <span className="bg-purple-200 text-purple-800 px-2 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider">Fee Split</span>
+          <span className={`${isPast ? 'bg-gray-200 text-gray-600' : 'bg-purple-200 text-purple-800'} px-2 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider`}>Fee Split</span>
         </div>
       )}
 
@@ -253,29 +309,37 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
           <>
             {order.status === 'open' && <button onClick={() => updateStatus('locked')} className="flex-1 py-2 bg-red-600 text-white font-bold text-sm rounded-xl hover:bg-red-700 transition">Lock & Buy</button>}
             {order.status === 'locked' && <button onClick={() => updateStatus('delivered')} className="flex-1 py-2 bg-green-600 text-white font-bold text-sm rounded-xl hover:bg-green-700 transition animate-pulse">Mark Arrived</button>}
-            {order.status === 'delivered' && <button disabled className="flex-1 py-2 bg-gray-200 text-gray-500 font-bold text-sm rounded-xl">Completed</button>}
+            {isPast && <button disabled className="flex-1 py-2 bg-gray-100 text-gray-400 font-bold text-sm rounded-xl border border-gray-200">Completed Order</button>}
             
             <button onClick={onManage} className="p-2 bg-gray-900 text-white rounded-xl hover:bg-black transition" title="Manage Order"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6V4m0 2a2 2 0 100 4m0-4a2 2 0 110 4m-6 8a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4m6 6v10m6-2a2 2 0 100-4m0 4a2 2 0 110-4m0 4v2m0-6V4" /></svg></button>
             <Link href={`/chat/${order.chat_room_id}`} className="px-4 py-2 bg-blue-50 text-blue-700 font-bold text-sm rounded-xl border border-blue-100 hover:bg-blue-100 transition flex items-center justify-center">Chat</Link>
           </>
         ) : (
           <>
-            {!hasJoined && order.status === 'open' && <button onClick={onJoin} className="flex-1 py-2 bg-purple-600 text-white font-bold text-sm rounded-xl hover:bg-purple-700 transition">Join & Add Items</button>}
+            {isDiscover && (
+              <button onClick={onJoin} className="flex-1 py-2.5 bg-blue-600 text-white font-black text-sm rounded-xl hover:bg-blue-700 transition shadow-sm">
+                + Join Order
+              </button>
+            )}
             
-            {hasJoined && (
+            {hasJoined && !isPast && (
               <div className="flex gap-2 flex-1">
                 {order.status === 'open' && (
                   <button onClick={onJoin} className="flex-[2] py-2 bg-purple-50 text-purple-700 font-bold text-sm rounded-xl border border-purple-200 hover:bg-purple-100 transition flex items-center justify-center gap-1">
                     ✏️ Edit Cart
                   </button>
                 )}
-                <button onClick={onManage} className="flex-[1] flex items-center justify-center p-2 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition" title="View Details">
+                <button onClick={onManage} className="flex-[1] flex items-center justify-center p-2 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition border border-gray-200" title="View Details">
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63-.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                 </button>
               </div>
             )}
 
-            {(hasJoined || order.status !== 'open') && <Link href={`/chat/${order.chat_room_id}`} prefetch={false} className="flex-1 py-2 bg-blue-600 text-white font-bold text-sm rounded-xl hover:bg-blue-700 transition flex items-center justify-center">Open Chat</Link>}
+            {(hasJoined || isPast) && !isDiscover && (
+              <Link href={`/chat/${order.chat_room_id}`} prefetch={false} className={`flex-1 py-2 font-bold text-sm rounded-xl transition flex items-center justify-center shadow-sm ${isPast ? 'bg-gray-100 text-gray-600 hover:bg-gray-200 border border-gray-200' : 'bg-blue-600 text-white hover:bg-blue-700'}`}>
+                {isPast ? 'View Receipt' : 'Open Chat'}
+              </Link>
+            )}
           </>
         )}
       </div>
@@ -574,7 +638,7 @@ function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClo
       ...prev,
       pickup_location: localStorage.getItem('last_pool_location') || profile?.block || '',
       contact_number: localStorage.getItem('last_pool_phone') || profile?.phone || '',
-      upi_id: localStorage.getItem('last_pool_upi') || ''
+      upi_id: localStorage.getItem('last_pool_upi') || profile?.upi_id || ''
     }));
   }, [profile]);
   

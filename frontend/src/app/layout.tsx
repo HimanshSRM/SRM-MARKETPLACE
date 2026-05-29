@@ -5,19 +5,23 @@ import { AuthProvider } from '@/context/AuthContext';
 import { NotificationProvider } from '@/context/NotificationContext';
 import Navbar from '@/components/Navbar'; 
 import NotificationPrompt from '@/components/NotificationPrompt'; 
+import { Toaster } from 'react-hot-toast'; // Highly recommended for clean toast notifications
 
 const inter = Inter({ subsets: ['latin'] });
 
 // 🚨 PWA UPGRADE: Next.js 14+ expects themeColor here instead of in metadata
 export const viewport: Viewport = {
   themeColor: '#ffffff',
+  width: 'device-width',
+  initialScale: 1,
+  maximumScale: 1,
 };
 
 // 🚨 THE SEO & PWA UPGRADE: This is what Google and Mobile phones read!
 export const metadata: Metadata = {
   title: 'SRM Marketplace | Buy, Sell & Cart Pool on Campus',
   description: 'The official student marketplace for SRM Institute of Science and Technology. Buy used books, sell electronics, find tech repairs, and split delivery fees with Cart Pooling.',
-  keywords: ['SRMIST', 'SRM Marketplace', 'SRM University', 'buy used books SRM', 'cart pool SRM', 'student marketplace', 'TechFix SRM'],
+  keywords: ['SRMIST', 'SRM Marketplace', 'SRM University', 'buy used books SRM', 'cart pool SRM', 'student marketplace'],
   manifest: '/manifest.json', // 📱 Links your PWA manifest for Android/Chrome
   appleWebApp: {              // 🍎 Tells iPhones how to display the installed app
     capable: true,
@@ -27,7 +31,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: 'SRM Marketplace',
     description: 'The premier student marketplace for the SRM campus.',
-    url: 'https://srm-marketplace-webapp.vercel.app/', // Update this if you buy a custom domain later!
+    url: 'https://srm-marketplace-webapp.vercel.app', 
     siteName: 'SRM Marketplace',
     type: 'website',
   },
@@ -41,12 +45,17 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
+        {/* 🚨 AuthProvider wraps EVERYTHING so every component knows if the user is logged in */}
         <AuthProvider>
           
           {/* 🚨 NotificationProvider wraps EVERYTHING so alerts work globally */}
           <NotificationProvider> 
             
-            <Navbar /> {/* Navbar is inside so it can hear the unread count! */}
+            {/* The Toaster component enables beautiful success/error popups globally */}
+            <Toaster position="top-center" />
+
+            {/* Navbar is inside the providers so it can read auth state and notification counts! */}
+            <Navbar /> 
             
             <main>
               {children}

@@ -11,15 +11,14 @@ from app.models.chat import (
     InboxResponse, 
     BidStatus,
     BulkDeletePayload,
-    TicketCreate
+    TicketCreate ,
+    ChatContactUpdate
 )
 
 router = APIRouter()
 
-# 🚨 NEW SCHEMA: For saving Phone/UPI post-deal
-class ContactUpdate(BaseModel):
-    phone: Optional[str] = None
-    upi_id: Optional[str] = None
+# 🚨 NEW SCHEMA: For saving Phone/UPI post-deal with the "Save as Default" toggle
+
 
 # ==========================================
 # 1. INITIATE CHAT (1-on-1 Marketplace)
@@ -60,7 +59,7 @@ async def initiate_chat(
                 "listing_id": data.listing_id,
                 "buyer_id": sender_id,
                 "seller_id": data.owner_id,
-                "shop_id": data.owner_id if owner_role == "shop_verified" else None, # 🚨 Added Shop ID metadata for frontend
+                "shop_id": data.owner_id if owner_role == "shop_verified" else None, 
                 "last_message": data.initial_message,
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "is_ticket": False
@@ -631,8 +630,8 @@ async def revert_deal(room_id: str, current_user: dict = Depends(get_current_use
 # 10. SAVE CHAT CONTACT INFO (Global + Room)
 # ==========================================
 @router.post("/{room_id}/contact", tags=["Chat & Bidding"])
-async def update_chat_contact(room_id: str, payload: ContactUpdate, current_user: dict = Depends(get_current_user)):
-    """Saves missing contact info to the user's global profile AND the active chat room."""
+async def update_chat_contact(room_id: str, payload: ChatContactUpdate, current_user: dict = Depends(get_current_user)):
+    """Saves contact info to the active chat room, and updates the global profile IF save_as_default is True."""
     try:
         uid = current_user["uid"]
         room_ref = db.collection("chat_rooms").document(room_id)
@@ -641,23 +640,33 @@ async def update_chat_contact(room_id: str, payload: ContactUpdate, current_user
         user_updates = {}
         room_updates = {}
 
+        # 🚨 Handle Phone Numbers
         if payload.phone:
-            user_updates["phone"] = payload.phone
+            # Always update the chat room so the other person sees it instantly
             if room.get("buyer_id") == uid: room_updates["buyer_phone"] = payload.phone
             if room.get("seller_id") == uid: room_updates["seller_phone"] = payload.phone
+            
+            # ONLY add to user profile if they checked the "Save as Default" box
+            if payload.save_as_default: 
+                user_updates["phone"] = payload.phone
 
+        # 🚨 Handle UPI IDs
         if payload.upi_id:
-            user_updates["upi_id"] = payload.upi_id
+            # Always update the chat room
             if room.get("seller_id") == uid: room_updates["seller_upi"] = payload.upi_id
+            
+            # ONLY add to user profile if they checked the "Save as Default" box
+            if payload.save_as_default: 
+                user_updates["upi_id"] = payload.upi_id
 
-        # Update global profile so they never have to type it again
-        if user_updates:
+        # Update global profile ONLY if there are updates and the box was checked
+        if user_updates and payload.save_as_default:
             db.collection("users").document(uid).update(user_updates)
 
-        # Update the chat room so the other person sees it instantly
+        # Update the chat room ALWAYS
         if room_updates:
             room_ref.update(room_updates)
 
-        return {"message": "Contact info saved!"}
+        return {"message": "Contact info saved!", "saved_as_default": payload.save_as_default}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

@@ -24,6 +24,11 @@ class VerifyOtpRequest(BaseModel):
     srm_email: EmailStr
     otp_code: str
 
+# 🚨 NEW MODEL: For updating Dashboard Defaults
+class StudentProfileUpdate(BaseModel):
+    phone: Optional[str] = None
+    upi_id: Optional[str] = None
+
 
 # --- SYNC & PROFILE ENDPOINTS ---
 
@@ -206,17 +211,38 @@ async def get_student_dashboard(student: dict = Depends(get_verified_student)):
     """Locked to @srmist.edu.in users only (and banned users viewing their graveyard)."""
     uid = student.get("uid")
     try:
+        # 🚨 Fetch user profile to get current defaults
+        user_doc = db.collection("users").document(uid).get()
+        user_data = user_doc.to_dict() if user_doc.exists else {}
+
         # 1. Fetch all items owned by this user from the 'listings' collection
         docs = db.collection("listings").where("owner_id", "==", uid).stream()
         my_listings = [{"id": doc.id, **doc.to_dict()} for doc in docs]
         
-        # 2. Return the profile info + their items!
+        # 2. Return the profile info + their items + 🚨 contact defaults!
         return {
-            # 🚨 THE FIX: Make the role dynamic so it returns "banned" if they are suspended!
             "role": student.get("role"), 
             "message": f"Welcome to the SRM Marketplace, {student.get('email')}!",
             "uid": uid,
+            "phone": user_data.get("phone", ""),      
+            "upi_id": user_data.get("upi_id", ""),    
             "listings": my_listings
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# 🚨 NEW ROUTE: Save Dashboard Defaults
+@router.put("/profile/contact", tags=["Users"])
+async def update_student_contact(payload: StudentProfileUpdate, user: dict = Depends(get_verified_student)):
+    try:
+        uid = user.get("uid")
+        update_data = {}
+        if payload.phone is not None: update_data["phone"] = payload.phone
+        if payload.upi_id is not None: update_data["upi_id"] = payload.upi_id
+        
+        if update_data:
+            db.collection("users").document(uid).update(update_data)
+        return {"message": "Defaults updated successfully!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

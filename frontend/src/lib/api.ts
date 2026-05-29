@@ -342,9 +342,13 @@ export const revertDeal = async (roomId: string) => {
 };
 
 // 🚨 NEW: Save missing contact info globally & to the chat room
-export const saveChatContactInfo = async (roomId: string, payload: { phone?: string, upi_id?: string }) => {
+export const saveChatContactInfo = async (
+  roomId: string, 
+  payload: { phone?: string; upi_id?: string; save_as_default?: boolean }
+) => {
   const res = await authenticatedFetch(`${API_URL}/api/chat/${roomId}/contact`, {
-    method: 'POST', body: JSON.stringify(payload)
+    method: 'POST', 
+    body: JSON.stringify(payload)
   });
   if (!res.ok) throw new Error("Failed to save contact info.");
   return res.json();
@@ -770,6 +774,17 @@ export async function hideChatRoom(roomId: string | number) {
   if (!response.ok) {
     const errorData = await response.json().catch(() => null);
     throw new Error(errorData?.detail || 'Failed to hide chat');
+  }
+  return await response.json();
+}
+
+export async function updateStudentContact(payload: { phone?: string, upi_id?: string }) {
+  const response = await authenticatedFetch(`${API_URL}/api/users/profile/contact`, {
+    method: 'PUT', body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.detail || 'Failed to update contact settings');
   }
   return await response.json();
 }

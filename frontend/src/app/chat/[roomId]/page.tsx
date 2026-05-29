@@ -41,6 +41,8 @@ export default function ChatRoomPage() {
   const [contactUpiInput, setContactUpiInput] = useState('');
   const [isSavingContact, setIsSavingContact] = useState(false);
   const [isReverting, setIsReverting] = useState(false);
+  const [isEditingContact, setIsEditingContact] = useState(false);
+  const [saveAsDefault, setSaveAsDefault] = useState(true);
 
   // --- MODERATION STATES ---
   const [modAction, setModAction] = useState<'warn' | 'hide' | 'delete' | 'restore' |null>(null);
@@ -55,6 +57,14 @@ export default function ChatRoomPage() {
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
 
   useEffect(() => { if (!isSelectionMode) scrollToBottom(); }, [messages, pendingMessages, isSelectionMode]);
+
+  // Sync profile defaults to inputs if room details are missing
+  useEffect(() => {
+    if (profile) {
+      if (!contactUpiInput && profile.upi_id) setContactUpiInput(profile.upi_id);
+      if (!contactPhoneInput && profile.phone) setContactPhoneInput(profile.phone);
+    }
+  }, [profile, contactUpiInput, contactPhoneInput]);
 
   // --- LOCAL STORAGE DRAFTS ---
   useEffect(() => {
@@ -156,7 +166,7 @@ export default function ChatRoomPage() {
         if (data.type !== 'group_order') {
           if (data.status === 'resolved') setRoomStatus('resolved');
           if (data.status === 'sold') setRoomStatus('sold');
-          else setRoomStatus('active'); // Revert status locally
+          else { setRoomStatus('active'); setIsEditingContact(false); } // Revert status
         }
       }
     });
@@ -208,7 +218,7 @@ export default function ChatRoomPage() {
   const finalDealPrice = acceptedBidMsg?.bid_amount || 0;
   const amIBuyer = roomDetails?.buyer_id === profile?.uid;
   
-  // Dynamic Phone Number Selector based on perspective
+  // Dynamic Phone Number Selector
   const sellerPhone = shopPhone || roomDetails?.seller_phone || roomDetails?.contact_number;
   const buyerPhone = roomDetails?.buyer_phone;
   const otherPersonPhone = amIBuyer ? sellerPhone : buyerPhone; 
@@ -267,7 +277,7 @@ export default function ChatRoomPage() {
 
   const handleAccept = async (messageId: string | number) => {
     if (isBanned) { alert("Suspended accounts cannot accept bids."); return; }
-    if (!confirm("Are you sure? This will mark the item as SOLD and close the negotiation.")) return;
+    if (!confirm("Are you sure? This will mark the item as SOLD and securely exchange contact information.")) return;
     try { await acceptBid(roomId, messageId); } catch (error) { alert("Error accepting bid."); }
   };
 
@@ -345,7 +355,7 @@ export default function ChatRoomPage() {
 
   const allDisplayMessages = [...messages, ...pendingMessages];
 
-  // 🚨 THE CSS FIX: h-[100dvh] max-h-[100dvh] w-full bounds the entire app to the mobile viewport perfectly.
+  // 🚨 UI FIX: h-[100dvh] max-h-[100dvh] entirely locks the layout to the viewport to prevent the input from hiding.
   return (
     <div className="flex flex-col h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gray-50 max-w-2xl mx-auto shadow-2xl relative">
       
@@ -532,7 +542,7 @@ export default function ChatRoomPage() {
       {/* ========================================= */}
       {/* 4. CHAT FEED & MODERATION PANELS          */}
       {/* ========================================= */}
-      {/* 🚨 THE FIX: flex-1, overflow-y-auto, min-h-0 perfectly bounds the messages within the viewport */}
+      {/* 🚨 THE FIX: min-h-0 prevents flexbox overflowing out of the viewport */}
       <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-gray-50/50">
         
         {/* Support Ticket Badge */}
@@ -698,9 +708,9 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* 🚨 THE FIX: Flawless Post-Deal Action Dashboard for Marketplace */}
+        {/* 🚨 THE PERSISTENT DEAL HUB (For Sold Items) */}
         {roomStatus === 'sold' && !isGroupOrder && (
-          <div className="mb-2 px-4 py-3 bg-green-50 rounded-2xl border border-green-200 shadow-sm animate-fade-in-up">
+          <div className="mb-2 p-4 bg-green-50 rounded-2xl border border-green-200 shadow-sm animate-fade-in-up">
             <div className="flex items-center justify-between mb-4 border-b border-green-200/50 pb-2">
               <div className="flex items-center gap-2">
                 <span className="text-xl">🎉</span> 
@@ -724,33 +734,38 @@ export default function ChatRoomPage() {
               )}
             </div>
             
-            {/* --- SELLER VIEW --- */}
+            {/* --- SELLER'S DEAL HUB --- */}
             {!amIBuyer ? (
-              // Does the Seller have BOTH UPI ID and Phone saved?
-              !(profile?.upi_id || roomDetails?.seller_upi) || !(profile?.phone || roomDetails?.seller_phone) ? (
-                <div className="flex flex-col gap-2 w-full animate-fade-in-up">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Add missing info to complete the deal:</p>
-                  {!(profile?.upi_id || roomDetails?.seller_upi) && (
-                    <input type="text" value={contactUpiInput} onChange={(e) => setContactUpiInput(e.target.value)} placeholder="Enter UPI ID to get paid..." className="px-4 py-3 text-xs font-bold bg-white border border-green-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500 shadow-inner" />
-                  )}
-                  {!(profile?.phone || roomDetails?.seller_phone) && (
-                    <input type="tel" value={contactPhoneInput} onChange={(e) => setContactPhoneInput(e.target.value)} placeholder="Enter WhatsApp to coordinate..." className="px-4 py-3 text-xs font-bold bg-white border border-green-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500 shadow-inner" />
-                  )}
-                  <button 
-                    disabled={isSavingContact || (!(profile?.upi_id || roomDetails?.seller_upi) && !contactUpiInput) || (!(profile?.phone || roomDetails?.seller_phone) && !contactPhoneInput)}
-                    onClick={async () => {
-                      setIsSavingContact(true);
-                      try { 
-                        let payload: any = {};
-                        if (contactUpiInput) payload.upi_id = contactUpiInput;
-                        if (contactPhoneInput) payload.phone = contactPhoneInput;
-                        await saveChatContactInfo(roomId, payload); 
-                      } catch(e) { alert("Failed to save."); } finally { setIsSavingContact(false); }
-                    }} 
-                    className="w-full py-3 bg-green-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-green-700 disabled:opacity-50 mt-1 active:scale-95 transition"
-                  >Save Details</button>
-                </div>
-              ) : (
+              <>
+                {/* 1. Contact Info Card (Edit Mode OR Display Mode) */}
+                {(!roomDetails?.seller_upi || isEditingContact) ? (
+                  <div className="flex flex-col gap-2 w-full mb-3 p-3 bg-white rounded-xl shadow-inner border border-gray-100">
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Share your UPI ID to get paid:</p>
+                    <input type="text" value={contactUpiInput} onChange={(e) => setContactUpiInput(e.target.value)} placeholder="e.g. 9876543210@ybl" className="px-4 py-2.5 text-xs font-bold bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                    <label className="flex items-center gap-2 mt-1 cursor-pointer">
+                      <input type="checkbox" checked={saveAsDefault} onChange={(e) => setSaveAsDefault(e.target.checked)} className="w-3.5 h-3.5 text-green-600 rounded border-gray-300" />
+                      <span className="text-[10px] font-bold text-gray-500">Save as my default for future deals</span>
+                    </label>
+                    <div className="flex gap-2 mt-1">
+                      {isEditingContact && roomDetails?.seller_upi && <button onClick={() => setIsEditingContact(false)} className="flex-1 py-2.5 bg-gray-200 text-gray-700 text-xs font-bold rounded-xl">Cancel</button>}
+                      <button 
+                        disabled={!contactUpiInput || isSavingContact}
+                        onClick={async () => {
+                          setIsSavingContact(true);
+                          try { await saveChatContactInfo(roomId, { upi_id: contactUpiInput, save_as_default: saveAsDefault }); setIsEditingContact(false); } catch(e) { alert("Failed to save."); } finally { setIsSavingContact(false); }
+                        }} 
+                        className="flex-[2] py-2.5 bg-green-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-green-700 disabled:opacity-50"
+                      >Save & Request Payment</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex justify-between items-center bg-white/50 px-3 py-2 rounded-lg border border-green-200/50 mb-3">
+                    <span className="text-[10px] font-bold text-gray-600">Receiving payment at: <strong className="text-gray-900">{roomDetails.seller_upi}</strong></span>
+                    <button onClick={() => { setContactUpiInput(roomDetails.seller_upi); setIsEditingContact(true); }} className="text-[10px] font-black text-blue-600 hover:text-blue-800 flex items-center gap-1">✏️ Edit</button>
+                  </div>
+                )}
+                
+                {/* 2. Action Buttons (Buyer Contact) */}
                 <div className="flex gap-2 w-full">
                   {otherPersonPhone ? (
                     <>
@@ -763,30 +778,48 @@ export default function ChatRoomPage() {
                     </div>
                   )}
                 </div>
-              )
+              </>
             ) : (
             
-            /* --- BUYER VIEW --- */
-              !(profile?.phone || roomDetails?.buyer_phone) ? (
-                <div className="flex flex-col gap-2 w-full animate-fade-in-up">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Add your phone number to coordinate pickup:</p>
-                  <input type="tel" value={contactPhoneInput} onChange={(e) => setContactPhoneInput(e.target.value)} placeholder="Enter WhatsApp Number..." className="w-full px-4 py-3 text-xs font-bold bg-white border border-green-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500 shadow-inner" />
-                  <button 
-                    disabled={!contactPhoneInput || isSavingContact}
-                    onClick={async () => {
-                      setIsSavingContact(true);
-                      try { await saveChatContactInfo(roomId, { phone: contactPhoneInput }); } catch(e) { alert("Failed to save."); } finally { setIsSavingContact(false); }
-                    }} 
-                    className="w-full py-3 bg-green-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-green-700 disabled:opacity-50 mt-1 active:scale-95 transition"
-                  >Save</button>
-                </div>
-              ) : (
+            /* --- BUYER'S DEAL HUB --- */
+              <>
+                {/* 1. Contact Info Card (Edit Mode OR Display Mode) */}
+                {(!roomDetails?.buyer_phone || isEditingContact) ? (
+                  <div className="flex flex-col gap-2 w-full mb-3 p-3 bg-white rounded-xl shadow-inner border border-gray-100">
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Share your phone number for pickup:</p>
+                    <input type="tel" value={contactPhoneInput} onChange={(e) => setContactPhoneInput(e.target.value)} placeholder="e.g. 9876543210" className="px-4 py-2.5 text-xs font-bold bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                    <label className="flex items-center gap-2 mt-1 cursor-pointer">
+                      <input type="checkbox" checked={saveAsDefault} onChange={(e) => setSaveAsDefault(e.target.checked)} className="w-3.5 h-3.5 text-green-600 rounded border-gray-300" />
+                      <span className="text-[10px] font-bold text-gray-500">Save as my default for future deals</span>
+                    </label>
+                    <div className="flex gap-2 mt-1">
+                      {isEditingContact && roomDetails?.buyer_phone && <button onClick={() => setIsEditingContact(false)} className="flex-1 py-2.5 bg-gray-200 text-gray-700 text-xs font-bold rounded-xl">Cancel</button>}
+                      <button 
+                        disabled={!contactPhoneInput || isSavingContact}
+                        onClick={async () => {
+                          setIsSavingContact(true);
+                          try { await saveChatContactInfo(roomId, { phone: contactPhoneInput, save_as_default: saveAsDefault }); setIsEditingContact(false); } catch(e) { alert("Failed to save."); } finally { setIsSavingContact(false); }
+                        }} 
+                        className="flex-[2] py-2.5 bg-green-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-green-700 disabled:opacity-50"
+                      >Save & Share</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex justify-between items-center bg-white/50 px-3 py-2 rounded-lg border border-green-200/50 mb-3">
+                    <span className="text-[10px] font-bold text-gray-600">Sharing phone: <strong className="text-gray-900">{roomDetails.buyer_phone}</strong></span>
+                    <button onClick={() => { setContactPhoneInput(roomDetails.buyer_phone); setIsEditingContact(true); }} className="text-[10px] font-black text-blue-600 hover:text-blue-800 flex items-center gap-1">✏️ Edit</button>
+                  </div>
+                )}
+
+                {/* 2. Action Buttons (Seller Contact & Pay) */}
                 <div className="flex gap-2 w-full">
-                  {otherPersonPhone && (
+                  {otherPersonPhone ? (
                     <>
                       <a href={`https://wa.me/91${otherPersonPhone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" className="flex-1 py-3 bg-[#25D366] text-white text-[10px] font-black uppercase tracking-wider rounded-xl flex items-center justify-center shadow-sm hover:bg-[#1ebd5a] transition active:scale-95">WhatsApp</a>
                       <a href={`tel:+91${otherPersonPhone.replace(/\D/g, '')}`} className="flex-1 py-3 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-wider rounded-xl flex items-center justify-center shadow-sm hover:bg-blue-200 transition active:scale-95">Call</a>
                     </>
+                  ) : (
+                    <div className="flex-1 py-3 bg-gray-100 text-gray-400 text-[10px] font-black uppercase tracking-wider rounded-xl flex items-center justify-center border border-gray-200">Awaiting Seller No.</div>
                   )}
                   <button 
                     onClick={() => {
@@ -795,15 +828,15 @@ export default function ChatRoomPage() {
                     }} 
                     className={`flex-[2] py-3 text-white text-[10px] font-black uppercase tracking-wider rounded-xl shadow-sm transition active:scale-95 ${roomDetails?.seller_upi ? 'bg-purple-600 hover:bg-purple-700' : 'bg-gray-400 cursor-not-allowed'}`}
                   >
-                    💸 Pay ₹{finalDealPrice}
+                    {roomDetails?.seller_upi ? `💸 Pay ₹${finalDealPrice}` : '🕒 Awaiting Seller UPI'}
                   </button>
                 </div>
-              )
+              </>
             )}
           </div>
         )}
 
-        {/* Input Blocking Logic */}
+        {/* Input Blocking Logic & The Main Input Form */}
         {roomStatus === 'resolved' ? (
           <div className="py-4 px-6 bg-gray-50 border border-gray-200 rounded-2xl text-center">
             <p className="text-gray-500 font-bold text-sm">🛡️ Ticket resolved. Chat closed.</p>
@@ -815,13 +848,27 @@ export default function ChatRoomPage() {
         ) : (
           <form onSubmit={(e) => handleSendMessage(e)} className="space-y-3">
              
-             {/* Bidding Checkbox (Hidden for Support, Groups, and Sold items) */}
-             {!isSupport && !isGroupOrder && roomStatus !== 'sold' && ( 
-               <div className="flex items-center gap-2 px-2">
-                  <input type="checkbox" id="bid" checked={isBidding} onChange={(e) => setIsBidding(e.target.checked)} disabled={isSelectionMode} className="w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer" />
-                  <label htmlFor="bid" className="text-xs font-bold text-gray-500 hover:text-gray-700 transition cursor-pointer select-none tracking-wide">MAKE OFFICIAL BID</label>
-               </div>
-             )}
+             {/* Upper Actions Row (Bidding Checkbox & Share Contact Card) */}
+             <div className="flex items-center justify-between px-2">
+               {/* Bidding Checkbox */}
+               {!isSupport && !isGroupOrder && roomStatus !== 'sold' && ( 
+                 <div className="flex items-center gap-2">
+                    <input type="checkbox" id="bid" checked={isBidding} onChange={(e) => setIsBidding(e.target.checked)} disabled={isSelectionMode} className="w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer" />
+                    <label htmlFor="bid" className="text-xs font-bold text-gray-500 hover:text-gray-700 transition cursor-pointer select-none tracking-wide">MAKE OFFICIAL BID</label>
+                 </div>
+               )}
+
+               {/* 🚨 NEW: Share Contact Card for Seller (Pre-deal off-app option) */}
+               {!isSupport && !isGroupOrder && roomStatus !== 'sold' && !amIBuyer && profile?.phone && (
+                 <button 
+                   type="button" 
+                   onClick={() => handleSendMessage(undefined, `You can reach me directly on WhatsApp: ${profile.phone}`)} 
+                   className="text-[10px] font-bold text-gray-500 hover:text-blue-600 transition flex items-center gap-1 bg-gray-100 hover:bg-blue-50 px-2 py-1 rounded-lg"
+                 >
+                   🪪 Share My Contact
+                 </button>
+               )}
+             </div>
              
              {/* Input Area */}
              <div className="flex gap-2">

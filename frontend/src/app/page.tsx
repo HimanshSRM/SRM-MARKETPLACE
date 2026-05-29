@@ -56,7 +56,6 @@ export default function HomePage() {
       if (savedTab) setActiveTab(savedTab as FeedTab);
       if (savedCategory) setActiveCategory(savedCategory);
     }
-    // Tell the app it is now safe to start fetching data
     setIsRestoringState(false);
   }, []);
 
@@ -74,7 +73,6 @@ export default function HomePage() {
   // 🌟 FETCH LOGIC
   const fetchProducts = async (cursor = '', category = '', reset = false) => {
     try {
-      // 🚨 CLEANUP: Removed the manual token generation. api.ts handles it securely!
       const response = await getLiveProducts(15, cursor, category === 'all' ? '' : category);
       
       if (reset) {
@@ -96,18 +94,9 @@ export default function HomePage() {
 
   // 🚨 2. COMBINED & SMART USE EFFECT
   useEffect(() => {
-    // Wait for Auth AND for the Persistent State to load from memory
     if (isAuthLoading || isRestoringState) return;
 
-    // If no profile, clear the feed and stop the spinner
-    if (!profile) {
-      setProducts([]);
-      setNextCursor(null);
-      setIsLoading(false);
-      return;
-    }
-
-    // If they are logged in, fetch the products based on the current tabs!
+    // 🚨 FETCH REGARDLESS OF AUTH STATUS to populate the teaser background!
     setIsLoading(true);
     setError(null);
     fetchProducts('', activeCategory, true).finally(() => setIsLoading(false));
@@ -130,7 +119,6 @@ export default function HomePage() {
     }
 
     try {
-      // 🚨 CLEANUP: Removed the manual token generation here too!
       const ownerId = product.owner_id || product.seller_id || product.user_id || product.creator_id;
 
       if (!ownerId) {
@@ -152,7 +140,7 @@ export default function HomePage() {
 
   const handleTabChange = (tab: FeedTab) => {
     setActiveTab(tab);
-    setActiveCategory('all'); // This automatically updates localStorage via the useEffect
+    setActiveCategory('all'); 
   };
 
   const displayedProducts = products.filter((p: any) => {
@@ -169,9 +157,9 @@ export default function HomePage() {
         <p className="text-sm text-gray-500 mt-1">Discover what's happening on campus today.</p>
       </div>
 
-      {profile && error !== "locked" && (
+      {error !== "locked" && (
         <>
-          {/* TABS */}
+          {/* TABS (Visible to all, so teaser looks realistic) */}
           <div className="flex flex-wrap gap-2 mb-4 bg-gray-100/50 p-1.5 rounded-xl w-full sm:w-fit">
             <button onClick={() => handleTabChange('all')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>All Feed</button>
             <button onClick={() => handleTabChange('product')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'product' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>Products</button>
@@ -207,110 +195,148 @@ export default function HomePage() {
         </>
       )}
 
-      {/* 🚨 3. RENDER LOGIC: Shows skeleton loaders while Firebase OR Backend is loading! */}
-      {isAuthLoading || isLoading || isRestoringState ? (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[1, 2, 3, 4, 5, 6].map((skeleton) => (
-            <div key={skeleton} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden animate-pulse">
-              <div className="h-48 bg-gray-200 w-full"></div>
-              <div className="p-5 space-y-3"><div className="h-5 bg-gray-200 rounded w-3/4"></div><div className="h-4 bg-gray-200 rounded w-1/2"></div></div>
-            </div>
-          ))}
-        </div>
-      ) : error === "locked" ? (
-        <div className="text-center py-20 bg-white rounded-2xl border border-gray-200 shadow-sm max-w-2xl mx-auto">
-          <h3 className="text-xl font-bold text-gray-900">Marketplace is Locked</h3>
-          <p className="text-gray-500 mt-2">You must verify your campus identity to view the live feed.</p>
-        </div>
-      ) : !profile ? (
-        <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-gray-300">
-          <h3 className="text-lg font-medium text-gray-900">Please log in to view the campus feed</h3>
-        </div>
-      ) : activeTab === 'pools' ? (
-        <GroupOrdersTab currentUser={profile} />
-      ) : displayedProducts.length === 0 ? (
-        <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-gray-300">
-          <h3 className="text-lg font-medium text-gray-900">No items found</h3>
-          <button onClick={() => router.push('/create-product')} className="mt-4 text-blue-600 font-medium hover:underline">Create a listing →</button>
-        </div>
-      ) : (
-        <>
-          {/* THE GRID */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-            {displayedProducts.map((product: any) => (
-              <div key={product.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden flex flex-col">
-                <div className="h-48 bg-gray-100 w-full relative group">
-                  {product.image_url ? (
-                    <img src={product.image_url} alt={product.title} className="w-full h-full object-cover" />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center text-gray-400">
-                      <svg className="w-12 h-12 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
-                    </div>
-                  )}
-                  <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-sm font-bold text-gray-900 shadow-sm">
-                    ₹{product.price}
-                  </div>
-                </div>
-                <div className="p-5 flex flex-col flex-grow">
-                  <div className="flex justify-between items-start gap-2">
-                    <h3 className="text-lg font-bold text-gray-900 line-clamp-1">{product.title}</h3>
-                    <span className="text-[10px] font-bold px-2 py-1 bg-gray-100 text-gray-500 rounded-md uppercase tracking-wide">
-                      {product.category || 'misc'}
-                    </span>
-                  </div>
-                  <p className="text-sm text-gray-500 mt-2 line-clamp-2 flex-grow">{product.description}</p>
-                  <div className="mt-6 pt-4 border-t border-gray-50 flex items-center justify-between">
-                    <div>
-                      <span className="text-xs font-medium text-gray-400 block">{product.seller_name || 'Campus Member'}</span>
-                      {profile.uid !== (product.owner_id || product.seller_id) && (
-                        <button 
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setReportingListing({ id: product.id.toString(), title: product.title });
-                          }}
-                          className="text-[10px] text-red-500 hover:text-red-700 font-bold mt-1 uppercase tracking-wider transition-colors"
-                        >
-                          🚩 Report
-                        </button>
-                      )}
-                    </div>
-                    <button onClick={(e) => handleMessageSeller(e, product)} className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-semibold hover:bg-blue-100 transition-colors">
-                      Message
-                    </button>
-                  </div>
-                </div>
+      {/* 🚨 THE RENDER WRAPPER: If not logged in, we blur the content! */}
+      <div className="relative">
+        
+        {/* If logged out, render the massive Hero Overlay */}
+        {!profile && !isAuthLoading && !isLoading && (
+          // 🚨 POSITIONS Overlay in the center with INTENSE BLUR!
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pt-16 sm:pt-32 px-4 backdrop-blur-[12px] bg-white/40">
+            <div className="relative z-10 text-center max-w-2xl mx-auto p-6 sm:p-8 bg-white/90 backdrop-blur-md rounded-3xl shadow-2xl border border-white/50">
+              
+              {/* RESTORED circular 'S' logo icon for better branding */}
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white mb-6 shadow-lg transform -rotate-3 font-black text-4xl">
+                 S
               </div>
-            ))}
-          </div>
-
-          {/* 🌟 THE LOAD MORE BUTTON */}
-          {nextCursor && (
-            <div className="flex justify-center pt-8 pb-4">
-              <button
-                onClick={handleLoadMore}
-                disabled={isFetchingMore}
-                className="px-8 py-3 bg-white border-2 border-gray-200 text-gray-900 font-bold rounded-2xl hover:border-blue-600 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
-              >
-                {isFetchingMore ? (
-                  <span className="flex items-center gap-2">
-                    <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
-                    Loading...
-                  </span>
-                ) : (
-                  "View More Items"
-                )}
-              </button>
+              
+              <h2 className="text-3xl sm:text-5xl font-black text-gray-900 tracking-tight mb-4 leading-tight">
+                Your Campus. <br className="hidden sm:block" /> 
+                <span className="text-blue-600">Your Marketplace.</span>
+              </h2>
+              
+              <p className="text-base sm:text-lg text-gray-600 font-medium mb-8 max-w-md mx-auto leading-relaxed">
+                Buy, sell, and split deliveries instantly. Verified students only. No outsiders, no scams.
+              </p>
+              
+              <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full px-4 sm:px-0">
+                {/* 🚨 CONSOLIDATED BUTTON: One primary button for both actions! */}
+                <button 
+                  onClick={() => router.push('/login')} 
+                  className="w-full sm:w-auto px-12 py-4 bg-blue-600 text-white rounded-2xl font-black text-lg shadow-lg hover:bg-blue-700 hover:shadow-xl transition-all active:scale-95"
+                >
+                  Log In
+                </button>
+              </div>
             </div>
-          )}
+            
+            {/* Reduced the fade so more content is visible above the bottom badges */}
+            <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-gray-50 to-transparent"></div>
+          </div>
+        )}
 
-          {!nextCursor && products.length > 0 && (
-            <p className="text-center text-gray-400 text-sm font-medium mt-8">
-              🎉 You've seen everything! No more items to show.
-            </p>
+        {/* 🚨 THE ACTUAL CONTENT: It renders underneath the blur! */}
+        <div className={!profile && !isAuthLoading && !isLoading ? "select-none pointer-events-none opacity-60 overflow-hidden max-h-[80vh]" : ""}>
+          {isAuthLoading || isLoading || isRestoringState ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+              {[1, 2, 3, 4, 5, 6].map((skeleton) => (
+                <div key={skeleton} className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden animate-pulse">
+                  <div className="h-48 bg-gray-200 w-full"></div>
+                  <div className="p-5 space-y-3"><div className="h-5 bg-gray-200 rounded w-3/4"></div><div className="h-4 bg-gray-200 rounded w-1/2"></div></div>
+                </div>
+              ))}
+            </div>
+          ) : error === "locked" ? (
+            <div className="text-center py-20 bg-white rounded-2xl border border-gray-200 shadow-sm max-w-2xl mx-auto">
+              <h3 className="text-xl font-bold text-gray-900">Marketplace is Locked</h3>
+              <p className="text-gray-500 mt-2">You must verify your campus identity to view the live feed.</p>
+            </div>
+          ) : activeTab === 'pools' ? (
+            <GroupOrdersTab currentUser={profile} />
+          ) : displayedProducts.length === 0 ? (
+            <div className="text-center py-20 bg-white rounded-2xl border border-dashed border-gray-300">
+              <h3 className="text-lg font-medium text-gray-900">No items found</h3>
+              {profile && <button onClick={() => router.push('/create-product')} className="mt-4 text-blue-600 font-medium hover:underline">Create a listing →</button>}
+            </div>
+          ) : (
+            <>
+              {/* THE GRID */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                {displayedProducts.map((product: any) => (
+                  <div key={product.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden flex flex-col">
+                    <div className="h-48 bg-gray-100 w-full relative group">
+                      {product.image_url ? (
+                        <img src={product.image_url} alt={product.title} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center text-gray-400">
+                          <svg className="w-12 h-12 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                        </div>
+                      )}
+                      <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-sm font-bold text-gray-900 shadow-sm">
+                        ₹{product.price}
+                      </div>
+                    </div>
+                    <div className="p-5 flex flex-col flex-grow">
+                      <div className="flex justify-between items-start gap-2">
+                        <h3 className="text-lg font-bold text-gray-900 line-clamp-1">{product.title}</h3>
+                        <span className="text-[10px] font-bold px-2 py-1 bg-gray-100 text-gray-500 rounded-md uppercase tracking-wide">
+                          {product.category || 'misc'}
+                        </span>
+                      </div>
+                      <p className="text-sm text-gray-500 mt-2 line-clamp-2 flex-grow">{product.description}</p>
+                      <div className="mt-6 pt-4 border-t border-gray-50 flex items-center justify-between">
+                        <div>
+                          <span className="text-xs font-medium text-gray-400 block">{product.seller_name || 'Campus Member'}</span>
+                          {profile && profile.uid !== (product.owner_id || product.seller_id) && (
+                            <button 
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setReportingListing({ id: product.id.toString(), title: product.title });
+                              }}
+                              className="text-[10px] text-red-500 hover:text-red-700 font-bold mt-1 uppercase tracking-wider transition-colors"
+                            >
+                              🚩 Report
+                            </button>
+                          )}
+                        </div>
+                        <button onClick={(e) => handleMessageSeller(e, product)} className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-semibold hover:bg-blue-100 transition-colors">
+                          Message
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* 🌟 THE LOAD MORE BUTTON (Only visible to logged-in users to prevent teaser bypass) */}
+              {profile && nextCursor && (
+                <div className="flex justify-center pt-8 pb-4">
+                  <button
+                    onClick={handleLoadMore}
+                    disabled={isFetchingMore}
+                    className="px-8 py-3 bg-white border-2 border-gray-200 text-gray-900 font-bold rounded-2xl hover:border-blue-600 hover:text-blue-600 transition-all shadow-sm disabled:opacity-50"
+                  >
+                    {isFetchingMore ? (
+                      <span className="flex items-center gap-2">
+                        <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+                        Loading...
+                      </span>
+                    ) : (
+                      "View More Items"
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {profile && !nextCursor && products.length > 0 && (
+                <p className="text-center text-gray-400 text-sm font-medium mt-8">
+                  🎉 You've seen everything! No more items to show.
+                </p>
+              )}
+            </>
           )}
-        </>
-      )}
+        </div>
+      </div>
 
       {reportingListing && (
         <ReportModal

@@ -3,7 +3,8 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import { getStudentDashboard, deleteMyListing } from '@/lib/api';
+// 🚨 IMPORTED NEW FUNCTION
+import { getStudentDashboard, deleteMyListing, updateStudentContact } from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import EditListingModal from '../../components/EditListingModal';
@@ -16,14 +17,16 @@ export default function StudentDashboardPage() {
   const [myListings, setMyListings] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // 🚨 The State for the Edit Modal
+  // 🚨 UI States for Settings
+  const [phoneInput, setPhoneInput] = useState('');
+  const [upiInput, setUpiInput] = useState('');
+  const [isSavingDefaults, setIsSavingDefaults] = useState(false);
+
   const [editingListing, setEditingListing] = useState<any>(null);
 
   useEffect(() => {
-    // 🚨 0. Wait for Firebase to finish checking
     if (isAuthLoading) return;
 
-    // 1. If not logged in, kick to login
     if (!profile) {
       router.push('/login');
       return;
@@ -36,10 +39,13 @@ export default function StudentDashboardPage() {
       }
 
       try {
-        // 🚨 CLEANUP: API wrapper handles auth automatically!
         const data = await getStudentDashboard();
         setDashboardData(data);
         setMyListings(data.listings || []);
+        
+        // 🚨 Pre-fill settings inputs
+        setPhoneInput(data.phone || '');
+        setUpiInput(data.upi_id || '');
       } catch (error) {
         console.error("Failed to load dashboard:", error);
         toast.error("Could not load your profile data.");
@@ -49,16 +55,26 @@ export default function StudentDashboardPage() {
     };
 
     loadDashboard();
-  }, [profile, router]);
+  }, [profile, router, isAuthLoading]);
 
-  // THE DELETE LOGIC
+  // 🚨 Handle Saving Default Contact Info
+  const handleSaveDefaults = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingDefaults(true);
+    try {
+      await updateStudentContact({ phone: phoneInput, upi_id: upiInput });
+      toast.success("Default settings saved successfully!");
+    } catch (error: any) {
+      toast.error(error.message || "Failed to save settings.");
+    } finally {
+      setIsSavingDefaults(false);
+    }
+  };
+
   const handleDelete = async (listingId: string) => {
     if (!window.confirm("Are you sure you want to permanently delete this listing?")) return;
-    
     try {
-      // 🚨 CLEANUP: API wrapper handles auth automatically!
       await deleteMyListing(listingId);
-      
       setMyListings((prev) => prev.filter(item => item.id !== listingId));
       toast.success("Listing deleted successfully.");
     } catch (error: any) {
@@ -76,10 +92,8 @@ export default function StudentDashboardPage() {
     );
   }
 
-  // 🚨 2. Safe fallback while router redirects
   if (!profile) return null;
 
-  // Bouncer
   if (profile?.role !== 'student') {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50 text-center p-4">
@@ -96,7 +110,7 @@ export default function StudentDashboardPage() {
         
         {/* Profile Header */}
         <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm flex items-center gap-6">
-          <div className="w-20 h-20 bg-blue-600 text-white rounded-full flex items-center justify-center text-4xl font-black shadow-inner">
+          <div className="w-20 h-20 bg-blue-600 text-white rounded-full flex items-center justify-center text-4xl font-black shadow-inner shrink-0">
             {profile?.email?.charAt(0).toUpperCase()}
           </div>
           <div>
@@ -108,9 +122,51 @@ export default function StudentDashboardPage() {
           </div>
         </div>
 
+        {/* 🚨 NEW: Default Settings Panel */}
+        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-gray-100 shadow-sm">
+          <div className="mb-6">
+            <h2 className="text-xl font-bold text-gray-900">Default Chat Settings</h2>
+            <p className="text-sm text-gray-500 mt-1">This info auto-fills in the chat room when you finalize a deal. Buyers will see your UPI, Sellers will see your WhatsApp.</p>
+          </div>
+          <form onSubmit={handleSaveDefaults} className="space-y-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">WhatsApp Number</label>
+                <input 
+                  type="tel" 
+                  value={phoneInput} 
+                  onChange={(e) => setPhoneInput(e.target.value)} 
+                  placeholder="e.g. 9876543210" 
+                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-black text-gray-400 uppercase tracking-widest mb-2">UPI ID</label>
+                <input 
+                  type="text" 
+                  value={upiInput} 
+                  onChange={(e) => setUpiInput(e.target.value.toLowerCase())} 
+                  placeholder="e.g. 9876543210@ybl" 
+                  className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end pt-2">
+              <button 
+                type="submit" 
+                disabled={isSavingDefaults}
+                className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 disabled:opacity-50 transition active:scale-95 flex items-center gap-2"
+              >
+                {isSavingDefaults && <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}
+                {isSavingDefaults ? 'Saving...' : 'Save Defaults'}
+              </button>
+            </div>
+          </form>
+        </div>
+
         {/* My Listings Section */}
         <div>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex justify-between items-center mb-6 px-1">
             <h2 className="text-2xl font-bold text-gray-900">My Listings</h2>
             <Link href="/create-product" className="px-5 py-2.5 bg-gray-900 text-white font-bold text-sm rounded-xl hover:bg-gray-800 transition shadow-sm">
               + Post New Item
@@ -177,7 +233,6 @@ export default function StudentDashboardPage() {
           )}
         </div>
 
-        {/* 🚨 THE MODAL IS MOUNTED HERE SO IT IS OFFICIALLY 'USED' */}
         {editingListing && (
           <EditListingModal 
             listing={editingListing} 

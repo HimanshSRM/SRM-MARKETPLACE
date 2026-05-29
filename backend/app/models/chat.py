@@ -57,3 +57,9 @@ class BulkDeletePayload(BaseModel):
 class ContactUpdate(BaseModel):
     phone: Optional[str] = None
     upi_id: Optional[str] = None
+
+
+class ChatContactUpdate(BaseModel):
+    phone: Optional[str] = None
+    upi_id: Optional[str] = None
+    save_as_default: bool = False
