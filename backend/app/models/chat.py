@@ -51,3 +51,9 @@ class InboxResponse(BaseModel):
 
 class BulkDeletePayload(BaseModel):
     message_ids: List[str]
+
+
+
+class ContactUpdate(BaseModel):
+    phone: Optional[str] = None
+    upi_id: Optional[str] = None

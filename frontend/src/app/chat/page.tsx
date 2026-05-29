@@ -50,7 +50,7 @@ export default function InboxPage() {
 
     const fetchInbox = async () => {
       try {
-        // 🚨 CLEANUP: API Wrapper handles auth automatically!
+        // API Wrapper handles auth automatically!
         const data = await getInbox();
         
         setInboxData({
@@ -75,7 +75,17 @@ export default function InboxPage() {
       }
     };
 
-    if (profile) fetchInbox();
+    if (profile) {
+      // 1. Fetch instantly on load
+      fetchInbox();
+
+      // 2. 🚨 MAGIC FIX: Refetch silently when user switches back to the tab
+      const handleFocus = () => fetchInbox();
+      window.addEventListener('focus', handleFocus);
+
+      // Cleanup
+      return () => window.removeEventListener('focus', handleFocus);
+    }
   }, [profile, router, isAuthLoading]);
 
   const formatTime = (dateString?: string) => {
@@ -96,7 +106,6 @@ export default function InboxPage() {
     if (!window.confirm("Remove this conversation from your inbox?")) return;
 
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth automatically!
       await hideChatRoom(roomId);
 
       setInboxData(prev => ({
@@ -267,6 +276,7 @@ export default function InboxPage() {
                   <Link 
                     href={`/chat/${roomId}`} 
                     key={roomId}
+                    prefetch={false}
                     className={`flex items-center justify-between p-6 transition-all cursor-pointer group relative ${isPool ? 'hover:bg-purple-50/50' : 'hover:bg-gray-50'}`}
                   >
                     <div className="flex items-center gap-5 w-full pr-12"> 

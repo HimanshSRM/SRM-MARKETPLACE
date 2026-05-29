@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field ,EmailStr
-from typing import Optional
+from typing import Optional , List , Dict , Any
 
 # 1. When a business signs up
 class ShopCreate(BaseModel):
@@ -29,6 +29,25 @@ class ShopProfileUpdate(BaseModel):
     description: Optional[str] = None
     phone_number: Optional[str] = None
     location: Optional[str] = None # e.g., "Tech Park", "Main Campus"
+
+
+# --- NEW SCHEMAS FOR ADVANCED FEATURES ---
+class ShopStatusUpdate(BaseModel):
+    is_open: bool
+
+class ShopNoticeUpdate(BaseModel):
+    text: str
+    is_active: bool
+
+class QuickReplyUpdate(BaseModel):
+    quick_replies: List[Dict[str, str]] # e.g., [{"id": "1", "trigger": "Location?", "response": "H-Block"}]
+
+class FlashDealCreate(BaseModel):
+    item_name: str
+    original_price: float
+    deal_price: float
+    duration_hours: int
+
 
     
         

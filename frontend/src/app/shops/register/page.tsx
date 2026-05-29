@@ -8,7 +8,6 @@ import { createShopProfile, checkMyShop, restoreShopProfile } from '@/lib/api';
 export default function ShopRegistrationPage() {
   const router = useRouter();
   
-  // 🚨 1. Grabbed the auth loading state
   const { profile, setProfile, isLoading: isAuthLoading } = useAuth();
   
   const [isPageLoading, setIsPageLoading] = useState(true); 
@@ -19,16 +18,15 @@ export default function ShopRegistrationPage() {
   const [choiceMade, setChoiceMade] = useState(false);
   const [isOverwriting, setIsOverwriting] = useState(false);
 
+  // 🚨 OPTIMIZED: Matched exactly to the new backend schema
   const [formData, setFormData] = useState({
     shop_name: '',       
-    description: '',
-    location: '',
+    tagline: '',         // Replaced 'description'
+    block: '',           // Replaced 'location'
     contact_number: '',  
-    contact_email: '',   
   });
 
   // --- PERSISTENT STATE: FORM DRAFT ---
-  // 1. Load saved form data on initial render
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const savedForm = localStorage.getItem('draft_shopRegistration');
@@ -42,24 +40,20 @@ export default function ShopRegistrationPage() {
     }
   }, []);
 
-  // 2. Save form data to memory whenever it changes
   useEffect(() => {
     localStorage.setItem('draft_shopRegistration', JSON.stringify(formData));
   }, [formData]);
 
   useEffect(() => {
-    // 🚨 2. WAIT FOR FIREBASE FIRST
     if (isAuthLoading) return;
 
     const fetchShopStatus = async () => {
-      // 🚨 3. If they are not logged in, stop the backend loading spinner early
       if (!profile) {
         setIsPageLoading(false);
         return;
       }
 
       try {
-        // 🚨 CLEANUP: API Wrapper handles auth automatically!
         const check = await checkMyShop();
         if (check.has_shop) {
           setPreviousShop(check.shop_data);
@@ -84,17 +78,13 @@ export default function ShopRegistrationPage() {
     setError(null);
 
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth automatically!
-      // This is now ONLY called when starting fresh (or first time)
       await createShopProfile(formData, isOverwriting);
       
-      // SMART ROLE HANDLING: Only demote if they were a shop starting completely over
       if (profile) {
          const newRole = profile.role === 'shop_verified' ? 'guest' : profile.role;
          setProfile({ ...profile, role: newRole });
       }
 
-      // 🚨 CLEAR DRAFT ON SUCCESS
       localStorage.removeItem('draft_shopRegistration');
 
       alert("Shop profile submitted successfully! Waiting for admin verification.");
@@ -114,17 +104,15 @@ export default function ShopRegistrationPage() {
     setIsSubmitting(true);
     setError(null);
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth automatically!
-      await restoreShopProfile(); // Calls the safe backend route
+      await restoreShopProfile(); 
 
-      // SMART ROLE HANDLING: Safely demote them to guest if they were a verified shop awaiting re-approval
       if (profile) {
          const newRole = profile.role === 'shop_verified' ? 'guest' : profile.role;
          setProfile({ ...profile, role: newRole });
       }
 
       alert("Welcome back! Your shop has been restored and is pending admin approval.");
-      router.push('/shops/dashboard'); // Send them straight to the dashboard
+      router.push('/shops/dashboard'); 
       
     } catch (err: any) {
       console.error("Error restoring shop:", err);
@@ -135,12 +123,11 @@ export default function ShopRegistrationPage() {
 
   const handleStartFresh = () => {
     if (!window.confirm("Are you sure? This will PERMANENTLY delete your old shop and all its items!")) return;
-    setFormData({ shop_name: '', description: '', location: '', contact_number: '', contact_email: '' });
+    setFormData({ shop_name: '', tagline: '', block: '', contact_number: '' });
     setChoiceMade(true);
     setIsOverwriting(true);
   };
 
-  // 🚨 4. COMBINED LOADING CHECK: Spin while either Firebase OR the backend is working
   if (isAuthLoading || isPageLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
@@ -150,7 +137,6 @@ export default function ShopRegistrationPage() {
     );
   }
 
-  // 🚨 5. Safe Fallback
   if (!profile) {
     return <div className="p-20 text-center font-bold text-red-500">Please log in to register a shop.</div>;
   }
@@ -200,7 +186,7 @@ export default function ShopRegistrationPage() {
             </div>
           </div>
         ) : (
-          /* THE STANDARD REGISTRATION FORM (Only shows if starting fresh or first time) */
+          /* THE STANDARD REGISTRATION FORM */
           <div className="animate-fade-in-up">
             <div>
               <h2 className="text-3xl font-black text-gray-900">
@@ -230,42 +216,32 @@ export default function ShopRegistrationPage() {
               </div>
 
               <div>
-                <label htmlFor="description" className="block text-sm font-bold text-gray-700">Business Description</label>
-                <textarea
-                  id="description" name="description" rows={3} required
-                  value={formData.description} onChange={handleChange}
-                  placeholder="What do you sell or what services do you provide?"
-                  className="mt-2 block w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-gray-50"
-                />
-              </div>
-
-              <div>
-                <label htmlFor="location" className="block text-sm font-bold text-gray-700">Campus Location</label>
+                <label htmlFor="tagline" className="block text-sm font-bold text-gray-700">Short Tagline</label>
                 <input
-                  id="location" name="location" type="text" required
-                  value={formData.location} onChange={handleChange}
-                  placeholder="e.g., Main Canteen, Block A"
+                  id="tagline" name="tagline" type="text" required maxLength={60}
+                  value={formData.tagline} onChange={handleChange}
+                  placeholder="e.g., Professional laptop repairs & accessories."
                   className="mt-2 block w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-gray-50"
                 />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
                 <div>
-                  <label htmlFor="contact_number" className="block text-sm font-bold text-gray-700">Public Phone / WhatsApp</label>
+                  <label htmlFor="block" className="block text-sm font-bold text-gray-700">Campus Block / Location</label>
                   <input
-                    id="contact_number" name="contact_number" type="tel" required
-                    value={formData.contact_number} onChange={handleChange}
-                    placeholder="+91..."
+                    id="block" name="block" type="text" required
+                    value={formData.block} onChange={handleChange}
+                    placeholder="e.g., Tech Park Gate"
                     className="mt-2 block w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-gray-50"
                   />
                 </div>
 
                 <div>
-                  <label htmlFor="contact_email" className="block text-sm font-bold text-gray-700">Business Email</label>
+                  <label htmlFor="contact_number" className="block text-sm font-bold text-gray-700">Public Phone / WhatsApp</label>
                   <input
-                    id="contact_email" name="contact_email" type="email" required
-                    value={formData.contact_email} onChange={handleChange}
-                    placeholder="shop@example.com"
+                    id="contact_number" name="contact_number" type="tel" required
+                    value={formData.contact_number} onChange={handleChange}
+                    placeholder="+91..."
                     className="mt-2 block w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-blue-500 focus:border-blue-500 bg-gray-50"
                   />
                 </div>

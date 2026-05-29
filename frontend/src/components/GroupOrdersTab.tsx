@@ -3,22 +3,25 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { collection, query, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { getActiveGroupOrders, createGroupOrder, joinGroupOrder, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage } from '@/lib/api';
+import { getActiveGroupOrders, createGroupOrder, joinGroupOrder, updateParticipantCart, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage, updateParticipantPrice } from '@/lib/api';
+import { useAuth } from '@/context/AuthContext';
 
 // --- INTERFACES ---
 interface PoolItem { item_name: string; quantity: number; estimated_price: number; }
-interface Participant { user_id: string; user_name: string; contact_number: string; block?: string; items: PoolItem[]; total_estimated_price: number; } 
+interface Participant { user_id: string; user_name: string; contact_number: string; block?: string; cart_link?: string; items: PoolItem[]; total_estimated_price: number; } 
 interface GroupOrder {
   id: string; host_id: string; host_name: string; app_name: string; pickup_location: string; contact_number: string;
-  upi_id?: string; delivery_fee?: number; 
+  upi_id?: string; cart_link?: string; delivery_fee?: number; 
   status: 'open' | 'locked' | 'delivered' | 'cancelled' | 'settled'; 
   expires_at: string; chat_room_id: string; participants: Participant[]; participant_ids: string[];
 }
 
 export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const router = useRouter();
+  const { profile } = useAuth(); 
+  
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState<GroupOrder | null>(null); 
   const [showManageModal, setShowManageModal] = useState<GroupOrder | null>(null); 
@@ -30,7 +33,6 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const fetchOrders = async (showSpinner = true) => {
     if (showSpinner) setIsLoading(true);
     try {
-      // 🚨 CLEANUP: API wrapper handles auth. Just fetch the data!
       const data = await getActiveGroupOrders();
       
       const mine = data.filter((o: GroupOrder) => 
@@ -56,7 +58,7 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         const updatedOrder = data.find((o: GroupOrder) => o.id === showManageModal.id);
         if (updatedOrder && updatedOrder.status !== 'cancelled' && updatedOrder.status !== 'settled') {
           setShowManageModal(updatedOrder);
-        } else if (updatedOrder?.status === 'cancelled' || updatedOrder?.status === 'settled') {
+        } else {
           setShowManageModal(null); 
         }
       }
@@ -73,20 +75,29 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
     
     fetchOrders(true);
 
+    let timeoutId: NodeJS.Timeout;
     const q = collection(db, 'group_orders');
     
+    // Debounced listener prevents infinite API loops
     const unsubscribe = onSnapshot(q, (snapshot) => {
       if (!snapshot.metadata.hasPendingWrites) {
-         fetchOrders(false);
+         clearTimeout(timeoutId);
+         timeoutId = setTimeout(() => {
+           fetchOrders(false);
+         }, 2000); 
       }
     });
 
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+      clearTimeout(timeoutId);
+    };
   }, [currentUser]);
 
   return (
     <div className="space-y-8 animate-fade-in-up">
       
+      {/* Hero Banner */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center bg-purple-50 p-6 rounded-3xl border border-purple-100 shadow-sm gap-4">
         <div>
           <h2 className="text-xl font-black text-purple-900">Cart Pooling</h2>
@@ -95,10 +106,11 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         <div className="flex gap-2 w-full sm:w-auto">
           <button 
             onClick={() => fetchOrders(true)} 
-            className="px-4 py-3 bg-white text-purple-600 border border-purple-200 font-bold rounded-xl shadow-sm hover:bg-purple-100 transition flex items-center justify-center"
+            disabled={isLoading}
+            className="px-4 py-3 bg-white text-purple-600 border border-purple-200 font-bold rounded-xl shadow-sm hover:bg-purple-100 transition flex items-center justify-center disabled:opacity-50"
             title="Refresh Feed"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            <svg className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
           </button>
           
           <button 
@@ -136,8 +148,9 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         </>
       )}
 
-      {showCreateModal && <CreateOrderModal onClose={() => setShowCreateModal(false)} onSuccess={() => { setShowCreateModal(false); fetchOrders(true); }} />}
-      {showJoinModal && <JoinOrderModal order={showJoinModal} onClose={() => setShowJoinModal(null)} router={router} />}
+      {/* Modals */}
+      {showCreateModal && <CreateOrderModal profile={profile} onClose={() => setShowCreateModal(false)} onSuccess={() => { setShowCreateModal(false); fetchOrders(true); }} />}
+      {showJoinModal && <JoinOrderModal profile={profile} currentUser={currentUser} order={showJoinModal} onClose={() => setShowJoinModal(null)} router={router} onRefresh={() => fetchOrders(true)} />}
       {showManageModal && <ManageOrderModal order={showManageModal} currentUser={currentUser} onClose={() => setShowManageModal(null)} onRefresh={() => fetchOrders(true)} />}
     </div>
   );
@@ -177,7 +190,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
     }
 
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth
       await updateGroupOrderStatus(order.id, newStatus, fee); 
       onRefresh();
     } catch (err) {
@@ -215,7 +227,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
                 </a>
               </div>
             )}
-
           </div>
           <p className="text-xs text-gray-500 font-medium mt-1">📍 Meet at: {order.pickup_location}</p>
         </div>
@@ -237,7 +248,7 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
         </div>
       )}
 
-      <div className="mt-auto pt-4 flex gap-2">
+      <div className="mt-auto pt-4 flex flex-wrap gap-2">
         {isHost ? (
           <>
             {order.status === 'open' && <button onClick={() => updateStatus('locked')} className="flex-1 py-2 bg-red-600 text-white font-bold text-sm rounded-xl hover:bg-red-700 transition">Lock & Buy</button>}
@@ -250,12 +261,21 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
         ) : (
           <>
             {!hasJoined && order.status === 'open' && <button onClick={onJoin} className="flex-1 py-2 bg-purple-600 text-white font-bold text-sm rounded-xl hover:bg-purple-700 transition">Join & Add Items</button>}
+            
             {hasJoined && (
-              <button onClick={onManage} className="p-2 bg-purple-50 text-purple-700 rounded-xl border border-purple-100 hover:bg-purple-100 transition" title="View Cart Details">
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
-              </button>
+              <div className="flex gap-2 flex-1">
+                {order.status === 'open' && (
+                  <button onClick={onJoin} className="flex-[2] py-2 bg-purple-50 text-purple-700 font-bold text-sm rounded-xl border border-purple-200 hover:bg-purple-100 transition flex items-center justify-center gap-1">
+                    ✏️ Edit Cart
+                  </button>
+                )}
+                <button onClick={onManage} className="flex-[1] flex items-center justify-center p-2 bg-gray-100 text-gray-700 rounded-xl hover:bg-gray-200 transition" title="View Details">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63-.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
+                </button>
+              </div>
             )}
-            {(hasJoined || order.status !== 'open') && <Link href={`/chat/${order.chat_room_id}`} className="flex-1 py-2 bg-blue-600 text-white font-bold text-sm rounded-xl hover:bg-blue-700 transition flex items-center justify-center">Open Group Chat</Link>}
+
+            {(hasJoined || order.status !== 'open') && <Link href={`/chat/${order.chat_room_id}`} prefetch={false} className="flex-1 py-2 bg-blue-600 text-white font-bold text-sm rounded-xl hover:bg-blue-700 transition flex items-center justify-center">Open Chat</Link>}
           </>
         )}
       </div>
@@ -264,7 +284,7 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
 }
 
 // ==========================================
-// 3. THE MANAGE ORDER MODAL (Host View & Read-Only Joiner View)
+// 2. THE MANAGE ORDER MODAL (Host Edit Prices)
 // ==========================================
 function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: GroupOrder, currentUser: any, onClose: () => void, onRefresh: () => Promise<void> }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -273,13 +293,16 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
 
   const isHost = currentUser.uid === order.host_id;
 
+  const [editingUserId, setEditingUserId] = useState<string | null>(null);
+  const [editPrice, setEditPrice] = useState<string>('');
+  const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
+
   const handleRefresh = async () => { setIsRefreshing(true); await onRefresh(); setIsRefreshing(false); };
 
   const handleKick = async (userId: string, userName: string) => {
     if (!window.confirm(`Are you sure you want to remove ${userName} from the order?`)) return;
     setIsRefreshing(true);
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth
       await kickParticipant(order.id, userId); 
       await onRefresh(); 
     } catch (err: any) { alert(err.message || "Failed to remove user"); setIsRefreshing(false); }
@@ -289,7 +312,6 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     if (!window.confirm("Are you sure? This will permanently close the order and archive it.")) return;
     setIsRefreshing(true);
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth
       await settleGroupOrder(order.id);
       onClose();
       await onRefresh();
@@ -304,7 +326,6 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     
     setIsRefreshing(true);
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth
       await updateGroupOrderStatus(order.id, 'cancelled');
       onClose(); 
       await onRefresh(); 
@@ -343,13 +364,33 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
 
     setIsBlasting(true);
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth. Added the new parameters to match ChatRoomPage
       await sendMessage(order.chat_room_id, currentUser.uid, message, false);
       alert("✅ Breakdown sent successfully to the Group Chat!");
     } catch (err) {
       alert("Failed to send breakdown to chat.");
     } finally {
       setIsBlasting(false);
+    }
+  };
+
+  const handleEditPriceClick = (userId: string, currentPrice: number) => {
+    setEditingUserId(userId);
+    setEditPrice(currentPrice.toString());
+  };
+
+  const handleSavePrice = async (userId: string) => {
+    const newPrice = parseFloat(editPrice);
+    if (isNaN(newPrice) || newPrice < 0) return alert("Invalid price");
+
+    setIsUpdatingPrice(true);
+    try {
+      await updateParticipantPrice(order.id, userId, newPrice);
+      setEditingUserId(null);
+      await onRefresh();
+    } catch (err: any) {
+      alert(err.message || "Failed to update price");
+    } finally {
+      setIsUpdatingPrice(false);
     }
   };
 
@@ -424,22 +465,52 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
                         <button onClick={() => handleKick(p.user_id, p.user_name)} className="p-1.5 ml-2 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition" title={`Remove ${p.user_name}`}><svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
                       )}
                     </div>
-                    <ul className="mt-2 space-y-2">
-                      {p.items.map((item, i) => (
-                        <li key={i} className="text-sm text-gray-600 flex items-center justify-between border-b border-gray-100 pb-2 last:border-0 last:pb-0">
-                          <span><span className="font-black text-gray-900">{item.quantity}x</span> {item.item_name}</span>
-                          <span className="text-xs text-gray-400 text-right">(₹{item.estimated_price} / unit) <br/><span className="text-sm font-bold text-gray-900">Total: ₹{item.estimated_price * item.quantity}</span></span>
-                        </li>
-                      ))}
-                    </ul>
                     
-                    {/* 🚨 THE FIX: Final Breakdown Total for transparency */}
+                    {p.cart_link ? (
+                      <div className="mt-2 mb-3">
+                         <a href={p.cart_link} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg inline-flex items-center gap-1 transition">
+                           🔗 Open Shared Cart
+                         </a>
+                      </div>
+                    ) : (
+                      <ul className="mt-2 space-y-2">
+                        {p.items.map((item, i) => (
+                          <li key={i} className="text-sm text-gray-600 flex items-center justify-between border-b border-gray-100 pb-2 last:border-0 last:pb-0">
+                            <span><span className="font-black text-gray-900">{item.quantity}x</span> {item.item_name}</span>
+                            <span className="text-xs text-gray-400 text-right">(₹{item.estimated_price} / unit) <br/><span className="text-sm font-bold text-gray-900">Total: ₹{item.estimated_price * item.quantity}</span></span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    
                     <div className="mt-3 pt-3 border-t border-gray-200 flex justify-between items-center">
-                      <span className="text-xs text-gray-500 font-medium">
-                        Items: ₹{p.total_estimated_price} {feePerPerson > 0 && <span className="text-purple-600">+ Fee: ₹{Math.ceil(feePerPerson)}</span>}
-                      </span>
+                      <div className="text-xs text-gray-500 font-medium flex items-center flex-wrap gap-1">
+                        <span>Cart:</span>
+                        {editingUserId === p.user_id ? (
+                          <div className="flex items-center gap-1">
+                            <span className="text-gray-900 font-bold">₹</span>
+                            <input
+                              type="number"
+                              value={editPrice}
+                              onChange={(e) => setEditPrice(e.target.value)}
+                              className="w-16 px-1.5 py-0.5 text-xs font-bold text-gray-900 border border-purple-300 rounded shadow-inner outline-none focus:border-purple-500"
+                              autoFocus
+                            />
+                            <button onClick={() => handleSavePrice(p.user_id)} disabled={isUpdatingPrice} className="text-green-600 bg-green-50 p-1 rounded hover:bg-green-100 transition"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg></button>
+                            <button onClick={() => setEditingUserId(null)} className="text-red-500 bg-red-50 p-1 rounded hover:bg-red-100 transition"><svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M6 18L18 6M6 6l12 12" /></svg></button>
+                          </div>
+                        ) : (
+                          <span className="font-bold text-gray-700 flex items-center gap-1">
+                            ₹{p.total_estimated_price}
+                            {isHost && (order.status === 'open' || order.status === 'locked') && (
+                              <button onClick={() => handleEditPriceClick(p.user_id, p.total_estimated_price)} className="text-blue-500 hover:text-blue-700 transition" title="Override Cart Total">✏️</button>
+                            )}
+                          </span>
+                        )}
+                        {feePerPerson > 0 && <span className="text-purple-600 ml-1">+ Fee: ₹{Math.ceil(feePerPerson)}</span>}
+                      </div>
                       <span className="text-sm font-black text-purple-700">
-                        Final Total: ₹{finalAmount}
+                        Total: ₹{finalAmount}
                       </span>
                     </div>
 
@@ -486,16 +557,37 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
 }
 
 // ==========================================
-// THE CREATE MODAL (Host Form)
+// 3. THE CREATE MODAL (Host Form with persistent Auto-Fill)
 // ==========================================
-function CreateOrderModal({ onClose, onSuccess }: { onClose: () => void, onSuccess: () => void }) {
-  const [formData, setFormData] = useState({ app_name: 'Blinkit', pickup_location: '', contact_number: '', expires_in_minutes: 15, upi_id: '' });
+function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClose: () => void, onSuccess: () => void }) {
+  const [formData, setFormData] = useState({ 
+    app_name: 'Blinkit', 
+    pickup_location: '', 
+    contact_number: '', 
+    expires_in_minutes: 15, 
+    upi_id: '',
+    cart_link: ''
+  });
+
+  useEffect(() => {
+    setFormData(prev => ({
+      ...prev,
+      pickup_location: localStorage.getItem('last_pool_location') || profile?.block || '',
+      contact_number: localStorage.getItem('last_pool_phone') || profile?.phone || '',
+      upi_id: localStorage.getItem('last_pool_upi') || ''
+    }));
+  }, [profile]);
+  
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault(); setIsSubmitting(true);
+    
+    localStorage.setItem('last_pool_location', formData.pickup_location);
+    localStorage.setItem('last_pool_phone', formData.contact_number);
+    localStorage.setItem('last_pool_upi', formData.upi_id);
+
     try { 
-      // 🚨 CLEANUP: API Wrapper handles auth
       await createGroupOrder(formData); 
       onSuccess(); 
     } 
@@ -505,18 +597,60 @@ function CreateOrderModal({ onClose, onSuccess }: { onClose: () => void, onSucce
   return (
     <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
       <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-xl animate-fade-in-up">
-        <h2 className="text-2xl font-black text-gray-900 mb-6">Start a Group Order</h2>
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-black text-gray-900">Start a Group Order</h2>
+          <button onClick={onClose} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full text-gray-500 transition"><svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg></button>
+        </div>
+
         <form onSubmit={handleSubmit} className="space-y-4">
-          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">App</label><select value={formData.app_name} onChange={(e) => setFormData({...formData, app_name: e.target.value})} className="w-full p-3 bg-gray-50 border rounded-xl"><option>Blinkit</option><option>Zepto</option><option>Zomato</option><option>Swiggy</option></select></div>
-          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Meeting Location</label><input type="text" required value={formData.pickup_location} onChange={(e) => setFormData({...formData, pickup_location: e.target.value})} className="w-full p-3 bg-gray-50 border rounded-xl" /></div>
-          
-          <div className="flex gap-4">
-            <div className="flex-1"><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Your Phone</label><input type="tel" required value={formData.contact_number} onChange={(e) => setFormData({...formData, contact_number: e.target.value})} className="w-full p-3 bg-gray-50 border rounded-xl" /></div>
-            <div className="flex-1"><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">UPI ID <span className="text-gray-400 font-normal">(Opt)</span></label><input type="text" placeholder="e.g. name@okhdfc" value={formData.upi_id} onChange={(e) => setFormData({...formData, upi_id: e.target.value})} className="w-full p-3 bg-gray-50 border rounded-xl" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">App</label>
+              <select value={formData.app_name} onChange={e => setFormData({...formData, app_name: e.target.value})} className="w-full px-3 py-3 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500">
+                <option value="Blinkit">Blinkit</option>
+                <option value="Zepto">Zepto</option>
+                <option value="Swiggy">Swiggy Instamart</option>
+                <option value="Other">Other</option>
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Close Order In</label>
+              <select value={formData.expires_in_minutes} onChange={e => setFormData({...formData, expires_in_minutes: Number(e.target.value)})} className="w-full px-3 py-3 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-purple-500">
+                <option value={15}>15 Minutes</option>
+                <option value={30}>30 Minutes</option>
+                <option value={60}>1 Hour</option>
+              </select>
+            </div>
           </div>
 
-          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Cutoff Time</label><select value={formData.expires_in_minutes} onChange={(e) => setFormData({...formData, expires_in_minutes: Number(e.target.value)})} className="w-full p-3 bg-gray-50 border rounded-xl"><option value={15}>In 15 Mins</option><option value={30}>In 30 Mins</option><option value={60}>In 1 Hour</option></select></div>
-          <div className="pt-4 flex gap-3"><button type="button" onClick={onClose} className="px-6 py-3 bg-gray-100 font-bold rounded-xl hover:bg-gray-200 transition">Cancel</button><button type="submit" disabled={isSubmitting} className="flex-1 py-3 bg-purple-600 text-white font-bold rounded-xl hover:bg-purple-700">{isSubmitting ? 'Starting...' : 'Broadcast Order'}</button></div>
+          <div>
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1 flex justify-between">
+              <span>Host UPI ID</span> <span className="text-purple-500">Required for Splits</span>
+            </label>
+            <input type="text" required value={formData.upi_id} onChange={e => setFormData({...formData, upi_id: e.target.value})} placeholder="e.g., yourname@okhdfc" className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-bold outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" />
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1 flex justify-between">
+              <span>Master Cart Link</span> <span className="text-gray-400">Optional</span>
+            </label>
+            <input type="url" value={formData.cart_link} onChange={e => setFormData({...formData, cart_link: e.target.value})} placeholder="Paste your Blinkit cart link..." className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 pt-2">
+            <div>
+              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Phone</label>
+              <input type="tel" required value={formData.contact_number} onChange={e => setFormData({...formData, contact_number: e.target.value})} placeholder="WhatsApp..." className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-xs font-bold outline-none focus:border-purple-500" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Pickup Block</label>
+              <input type="text" required value={formData.pickup_location} onChange={e => setFormData({...formData, pickup_location: e.target.value})} placeholder="e.g., M Block Gate" className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-xs font-bold outline-none focus:border-purple-500" />
+            </div>
+          </div>
+
+          <button type="submit" disabled={isSubmitting} className="w-full mt-4 py-4 bg-purple-600 text-white font-black rounded-2xl hover:bg-purple-700 active:scale-95 transition-all shadow-sm">
+            {isSubmitting ? 'Creating...' : 'Start Hosting'}
+          </button>
         </form>
       </div>
     </div>
@@ -524,116 +658,218 @@ function CreateOrderModal({ onClose, onSuccess }: { onClose: () => void, onSucce
 }
 
 // ==========================================
-// THE JOIN MODAL (Multi-Item Cart System)
+// 4. THE JOIN / EDIT MODAL (Hybrid System & Persistent Auto-Fill)
 // ==========================================
-function JoinOrderModal({ order, onClose, router }: { order: GroupOrder, onClose: () => void, router: any }) {
-  const [cart, setCart] = useState<PoolItem[]>([]);
+function JoinOrderModal({ profile, currentUser, order, onClose, router, onRefresh }: { profile: any, currentUser: any, order: GroupOrder, onClose: () => void, router: any, onRefresh?: () => void }) {
+  const existingParticipant = order.participants.find(p => p.user_id === currentUser?.uid);
+  const isEditing = !!existingParticipant;
+
+  const [cart, setCart] = useState<PoolItem[]>(existingParticipant?.items || []);
   
-  const [contactNumber, setContactNumber] = useState('');
-  const [block, setBlock] = useState('');
-  const [itemName, setItemName] = useState(''); 
-  const [qty, setQty] = useState<string | number>('1'); 
-  const [price, setPrice] = useState('');
+  const [joinForm, setJoinForm] = useState({
+    contact_number: '',
+    block: '',
+    joinMode: 'link', 
+    cart_link: '',
+    linkEstimatedPrice: '',
+    manualItemName: '',
+    manualItemPrice: ''
+  });
+
+  useEffect(() => {
+    if (isEditing) {
+      setJoinForm(prev => ({
+        ...prev,
+        contact_number: existingParticipant.contact_number,
+        block: existingParticipant.block || '',
+        joinMode: existingParticipant.cart_link ? 'link' : 'manual',
+        cart_link: existingParticipant.cart_link || '',
+        linkEstimatedPrice: existingParticipant.cart_link ? existingParticipant.total_estimated_price.toString() : ''
+      }));
+    } else {
+      setJoinForm(prev => ({
+        ...prev,
+        contact_number: localStorage.getItem('last_pool_phone') || profile?.phone || '',
+        block: localStorage.getItem('last_pool_block') || profile?.block || ''
+      }));
+    }
+  }, [existingParticipant, profile, isEditing]);
   
+  const [manualQty, setManualQty] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const handleAddToCart = (e: React.FormEvent) => {
-    e.preventDefault(); if (!itemName || !price || !qty) return;
-    setCart([...cart, { item_name: itemName, quantity: Number(qty), estimated_price: Number(price) }]);
-    setItemName(''); setQty('1'); setPrice(''); 
+  const handleAddToCart = (e?: React.FormEvent) => {
+    if (e) e.preventDefault(); 
+    if (!joinForm.manualItemName || !joinForm.manualItemPrice) return;
+    
+    setCart([...cart, { 
+      item_name: joinForm.manualItemName, 
+      quantity: manualQty, 
+      estimated_price: Number(joinForm.manualItemPrice) 
+    }]);
+    
+    setJoinForm({ ...joinForm, manualItemName: '', manualItemPrice: '' }); 
+    setManualQty(1);
   };
 
   const handleRemoveItem = (index: number) => {
     setCart(cart.filter((_, i) => i !== index));
   };
 
-  const handleEditItem = (index: number) => {
-    const itemToEdit = cart[index];
-    setItemName(itemToEdit.item_name);
-    setQty(itemToEdit.quantity);
-    setPrice(itemToEdit.estimated_price.toString());
-    handleRemoveItem(index); 
-  };
+  const handleFinalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!joinForm.contact_number || !joinForm.block) return alert("Please enter your phone and block.");
+    if (joinForm.joinMode === 'link' && (!joinForm.cart_link || !joinForm.linkEstimatedPrice)) return alert("Please paste the Blinkit/Zepto cart link and enter your total value.");
 
-  const handleFinalSubmit = async () => {
-    if (cart.length === 0 || !contactNumber || !block) return alert("Add items, your phone, and your block first!");
+    if (joinForm.joinMode === 'manual' && cart.length === 0) {
+      if (joinForm.manualItemName && joinForm.manualItemPrice) {
+        cart.push({ item_name: joinForm.manualItemName, quantity: manualQty, estimated_price: Number(joinForm.manualItemPrice) });
+      } else {
+        return alert("Please add at least one item to your cart.");
+      }
+    }
+
     setIsSubmitting(true);
+
+    localStorage.setItem('last_pool_phone', joinForm.contact_number);
+    localStorage.setItem('last_pool_block', joinForm.block);
+
     try { 
-      // 🚨 CLEANUP: API Wrapper handles auth
-      await joinGroupOrder(order.id, { contact_number: contactNumber, block, items: cart }); 
-      router.push(`/chat/${order.chat_room_id}`); 
+      const payload: any = { 
+        contact_number: joinForm.contact_number, 
+        block: joinForm.block, 
+        cart_link: joinForm.joinMode === 'link' ? joinForm.cart_link : "",
+        items: joinForm.joinMode === 'manual' ? cart : [{ item_name: "Shared Cart Link Items", quantity: 1, estimated_price: Number(joinForm.linkEstimatedPrice) }] 
+      };
+
+      if (isEditing) {
+        await updateParticipantCart(order.id, payload);
+        alert("Cart updated successfully!");
+        onClose();
+        if (onRefresh) onRefresh();
+      } else {
+        await joinGroupOrder(order.id, payload); 
+        router.push(`/chat/${order.chat_room_id}`); 
+      }
     } 
-    catch (err) { setIsSubmitting(false); alert("Failed to join order"); }
+    catch (err) { setIsSubmitting(false); alert(`Failed to ${isEditing ? 'update' : 'join'} order`); }
   };
 
   return (
-    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-xl animate-fade-in-up max-h-[90vh] overflow-y-auto">
-        <div className="flex justify-between items-center mb-6"><h2 className="text-2xl font-black text-gray-900">Add Your Items</h2><button onClick={onClose} className="text-gray-400 hover:text-gray-900 text-3xl">&times;</button></div>
+    <div className="fixed inset-0 bg-gray-900/50 backdrop-blur-sm flex justify-center items-end sm:items-center z-50 p-4">
+      <div className="bg-white w-full max-w-md rounded-[32px] p-6 shadow-2xl animate-fade-in-up max-h-[90vh] overflow-y-auto">
         
-        {cart.length > 0 && (
-          <div className="mb-6 p-4 bg-gray-50 border border-gray-200 rounded-2xl">
-            <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Your Cart</h4>
-            <ul className="space-y-3">
-              {cart.map((c, i) => (
-                <li key={i} className="text-sm font-medium flex justify-between items-center border-b border-gray-200 pb-2 last:border-0 last:pb-0">
-                  <div>
-                    <span className="block mb-0.5"><span className="font-black text-purple-600">{c.quantity}x</span> {c.item_name} <span className="text-xs text-gray-400 ml-1">(₹{c.estimated_price}/unit)</span></span>
-                    <span className="text-gray-900 font-bold">Total: ₹{c.estimated_price * c.quantity}</span>
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <button onClick={() => handleEditItem(i)} className="p-1.5 text-blue-500 hover:bg-blue-100 rounded-md transition" title="Edit Item">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg>
-                    </button>
-                    <button onClick={() => handleRemoveItem(i)} className="p-1.5 text-red-500 hover:bg-red-100 rounded-md transition" title="Remove Item">
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
-                    </button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          </div>
-        )}
-        
-        <form onSubmit={handleAddToCart} className="space-y-4 mb-6 pb-6 border-b border-gray-100">
-          <div><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Item Name</label><input type="text" value={itemName} onChange={e => setItemName(e.target.value)} placeholder="e.g., Maggi Masala" className="w-full p-3 bg-white border border-gray-300 shadow-sm rounded-xl" required /></div>
-          <div className="flex gap-4">
-            
-            <div className="flex-1">
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Qty</label>
-              <input 
-                type="number" 
-                min="1" 
-                value={qty} 
-                onChange={(e) => {
-                  const val = e.target.value;
-                  if (val === '') setQty('');
-                  else setQty(parseInt(val, 10)); 
-                }} 
-                className="w-full p-3 bg-white border border-gray-300 shadow-sm rounded-xl" 
-                required 
-              />
-            </div>
-
-            <div className="flex-1"><label className="block text-xs font-bold text-gray-700 mb-1 uppercase">Unit Cost (₹)</label><input type="number" min="1" value={price} onChange={e => setPrice(e.target.value)} placeholder="₹" className="w-full p-3 bg-white border border-gray-300 shadow-sm rounded-xl" required /></div>
-          </div>
-          <button type="submit" className="w-full py-2 bg-gray-100 text-gray-900 font-bold rounded-xl hover:bg-gray-200 border border-gray-200 border-dashed transition">+ Add to Order List</button>
-        </form>
-        <div className="space-y-4">
-          
-          <div className="flex gap-3">
-            <div className="flex-[2]">
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase text-purple-600">Your Phone</label>
-              <input type="tel" value={contactNumber} onChange={e => setContactNumber(e.target.value)} placeholder="WhatsApp..." className="w-full p-3 bg-purple-50 border border-purple-200 rounded-xl outline-none focus:border-purple-600" required />
-            </div>
-            <div className="flex-[1]">
-              <label className="block text-xs font-bold text-gray-700 mb-1 uppercase text-purple-600">Block</label>
-              <input type="text" value={block} onChange={e => setBlock(e.target.value)} placeholder="e.g. M" className="w-full p-3 bg-purple-50 border border-purple-200 rounded-xl outline-none focus:border-purple-600" required />
-            </div>
-          </div>
-
-          <button onClick={handleFinalSubmit} disabled={cart.length === 0 || !contactNumber || !block || isSubmitting} className="w-full py-3 bg-gray-900 text-white font-bold rounded-xl hover:bg-black transition disabled:opacity-50">{isSubmitting ? 'Joining...' : 'Done & Enter Chat'}</button>
+        <div className="flex justify-between items-center mb-6">
+          <h2 className="text-2xl font-black text-gray-900">{isEditing ? 'Edit Your Cart' : 'Add Your Items'}</h2>
+          <button onClick={onClose} className="p-2 bg-gray-100 hover:bg-gray-200 rounded-full text-gray-500 transition">
+            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+          </button>
         </div>
+
+        <div className="flex bg-gray-100 p-1 rounded-xl mb-6">
+          <button 
+            type="button" 
+            onClick={() => setJoinForm({...joinForm, joinMode: 'link'})} 
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${joinForm.joinMode === 'link' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+          >
+            🔗 Shared Link
+          </button>
+          <button 
+            type="button" 
+            onClick={() => setJoinForm({...joinForm, joinMode: 'manual'})} 
+            className={`flex-1 py-2 text-xs font-bold rounded-lg transition ${joinForm.joinMode === 'manual' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}
+          >
+            ✍️ Type Manual
+          </button>
+        </div>
+
+        <form onSubmit={handleFinalSubmit} className="space-y-4">
+          
+          {joinForm.joinMode === 'link' ? (
+            <div className="animate-fade-in-up mb-6 pb-6 border-b border-gray-100 space-y-4">
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Paste Cart Link</label>
+                <input 
+                  type="url" required 
+                  value={joinForm.cart_link} 
+                  onChange={e => setJoinForm({...joinForm, cart_link: e.target.value})} 
+                  placeholder="https://link.blinkit.com/..." 
+                  className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" 
+                />
+                <p className="text-[10px] text-gray-400 font-bold mt-2 ml-1">Go to Blinkit/Zepto app → Cart → Share Cart.</p>
+              </div>
+              <div>
+                <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Your Total Cart Value (₹)</label>
+                <input 
+                  type="number" required 
+                  value={joinForm.linkEstimatedPrice} 
+                  onChange={e => setJoinForm({...joinForm, linkEstimatedPrice: e.target.value})} 
+                  placeholder="e.g., 140" 
+                  className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" 
+                />
+              </div>
+            </div>
+          ) : (
+            <div className="animate-fade-in-up">
+              {cart.length > 0 && (
+                <div className="mb-4 p-4 bg-gray-50 border border-gray-200 rounded-2xl">
+                  <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">Your Cart</h4>
+                  <ul className="space-y-3">
+                    {cart.map((c, i) => (
+                      <li key={i} className="text-sm font-medium flex justify-between items-center border-b border-gray-200 pb-2 last:border-0 last:pb-0">
+                        <div>
+                          <span className="block mb-0.5"><span className="font-black text-purple-600">{c.quantity}x</span> {c.item_name} <span className="text-xs text-gray-400 ml-1">(₹{c.estimated_price}/unit)</span></span>
+                          <span className="text-gray-900 font-bold">Total: ₹{c.estimated_price * c.quantity}</span>
+                        </div>
+                        <button type="button" onClick={() => handleRemoveItem(i)} className="p-1.5 text-red-500 hover:bg-red-100 rounded-md transition" title="Remove Item"><svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg></button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              
+              <div className="space-y-3 mb-6 pb-6 border-b border-gray-100">
+                <div>
+                  <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Item Name</label>
+                  <input type="text" value={joinForm.manualItemName} onChange={e => setJoinForm({...joinForm, manualItemName: e.target.value})} placeholder="e.g., Maggi Masala" className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" />
+                </div>
+                <div className="flex gap-3">
+                  <div className="flex-1">
+                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1 flex justify-center">Quantity</label>
+                    <div className="flex items-center justify-between bg-gray-50 border border-gray-200 rounded-2xl p-2 shadow-inner h-[48px]">
+                      <button type="button" onClick={() => setManualQty(Math.max(1, manualQty - 1))} className="w-8 h-8 rounded-xl bg-white text-gray-600 font-bold hover:bg-gray-100 shadow-sm">-</button>
+                      <span className="font-black text-gray-900">{manualQty}</span>
+                      <button type="button" onClick={() => setManualQty(manualQty + 1)} className="w-8 h-8 rounded-xl bg-white text-gray-600 font-bold hover:bg-gray-100 shadow-sm">+</button>
+                    </div>
+                  </div>
+                  <div className="flex-[1.5]">
+                    <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Est. Cost (₹)</label>
+                    <input type="number" value={joinForm.manualItemPrice} onChange={e => setJoinForm({...joinForm, manualItemPrice: e.target.value})} placeholder="40" className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner h-[48px]" />
+                  </div>
+                </div>
+                <button type="button" onClick={handleAddToCart} className="w-full py-3 bg-purple-50 text-purple-700 font-bold rounded-xl hover:bg-purple-100 border border-purple-200 transition text-sm shadow-sm">
+                  + Add Item
+                </button>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 pt-2">
+            <div>
+              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Phone</label>
+              <input type="tel" required value={joinForm.contact_number} onChange={e => setJoinForm({...joinForm, contact_number: e.target.value})} placeholder="WhatsApp..." className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-xs font-bold outline-none focus:border-purple-500" />
+            </div>
+            <div>
+              <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Hostel Block</label>
+              <input type="text" required value={joinForm.block} onChange={e => setJoinForm({...joinForm, block: e.target.value})} placeholder="e.g. M Block" className="w-full px-4 py-3 bg-white border border-gray-200 rounded-xl text-xs font-bold outline-none focus:border-purple-500" />
+            </div>
+          </div>
+
+          <button type="submit" disabled={isSubmitting} className="w-full mt-4 py-4 bg-gray-900 text-white font-black rounded-2xl hover:bg-black active:scale-95 transition-all shadow-sm">
+            {isSubmitting ? 'Saving...' : (isEditing ? 'Save Changes' : 'Done & Enter Chat')}
+          </button>
+        </form>
       </div>
     </div>
   );

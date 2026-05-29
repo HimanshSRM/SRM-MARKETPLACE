@@ -15,6 +15,8 @@ export interface UserProfile {
   email?: string;
   name?: string;
   status?: string;
+  phone?: string;
+  upi_id?: string;
 }
 
 interface AuthContextType {

@@ -1,22 +1,23 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import uuid
 from google.cloud.firestore import ArrayUnion, ArrayRemove
 
 from app.core.security import get_current_user
-from app.core.firebase import db
+from app.core.firebase import db , firestore
 
 router = APIRouter()
 
-# --- SCHEMAS ---
+# --- HYBRID SCHEMAS ---
 class PoolCreate(BaseModel):
     app_name: str
     pickup_location: str
     contact_number: str
     expires_in_minutes: int
-    upi_id: str = "" # Optional UPI ID for frictionless payments
+    upi_id: str                 # 🚨 REQUIRED for automatic split payments
+    cart_link: str = ""         # 🚨 NEW: Optional Master Cart Link
 
 class PoolItem(BaseModel):
     item_name: str
@@ -26,11 +27,16 @@ class PoolItem(BaseModel):
 class PoolJoin(BaseModel):
     contact_number: str
     block: str = ""
-    items: List[PoolItem]
+    cart_link: str = ""         # 🚨 NEW: The Link-First approach
+    items: List[PoolItem] = []  # Fallback for manual typed items
 
 class PoolStatusUpdate(BaseModel):
     status: str 
-    delivery_fee: float = 0.0 # Delivery fee to split
+    delivery_fee: float = 0.0   # Delivery fee to split among participants
+
+# 🚨 NEW SCHEMA: For the Host to override a joiner's total price
+class ParticipantPriceUpdate(BaseModel):
+    new_price: float
 
 # --- ROUTES ---
 @router.get("/")
@@ -84,9 +90,18 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
 
         # Initialize the Group Chat
         chat_data = {
-            "type": "group_order", "pool_id": pool_id, "app_name": pool_data.app_name,
-            "participants": [current_user["uid"]], "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(), "last_message": "Group order chat created."
+            "type": "group_order", 
+            "pool_id": pool_id, 
+            "app_name": pool_data.app_name,
+            "participants": [current_user["uid"]], 
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(), 
+            "last_message": "Group order chat created.",
+            # 🚨 FIX: Pass these variables to the chat room so the QR Code and Dashboards work!
+            "upi_id": pool_data.upi_id,
+            "host_name": user_name,
+            "pickup_location": pool_data.pickup_location,
+            "cart_link": pool_data.cart_link
         }
         db.collection("chat_rooms").document(chat_room_id).set(chat_data)
 
@@ -94,8 +109,9 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
         new_pool = {
             "host_id": current_user["uid"], "host_name": user_name, "app_name": pool_data.app_name,
             "pickup_location": pool_data.pickup_location, "contact_number": pool_data.contact_number,
-            "upi_id": pool_data.upi_id, # Save UPI ID
-            "delivery_fee": 0.0,        # Initialize Fee
+            "upi_id": pool_data.upi_id,            # 🚨 Save UPI ID
+            "cart_link": pool_data.cart_link,      # 🚨 Save Master Cart Link
+            "delivery_fee": 0.0,                   # Initialize Fee
             "status": "open", "expires_at": expires_at.isoformat(), "chat_room_id": chat_room_id,
             "participants": [], 
             "participant_ids": [], # Flat array for visibility queries
@@ -112,7 +128,7 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
 async def join_group_order(
     pool_id: str, 
     payload: PoolJoin, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request, 
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -127,9 +143,13 @@ async def join_group_order(
         total_price = sum(item.estimated_price * item.quantity for item in payload.items)
 
         new_participant = {
-            "user_id": current_user["uid"], "user_name": user_name, "contact_number": payload.contact_number,
+            "user_id": current_user["uid"], 
+            "user_name": user_name, 
+            "contact_number": payload.contact_number,
             "block": payload.block,
-            "items": [item.model_dump() for item in payload.items], "total_estimated_price": total_price,
+            "cart_link": payload.cart_link, # 🚨 Save the user's cart link
+            "items": [item.model_dump() for item in payload.items], 
+            "total_estimated_price": total_price,
             "added_at": datetime.now(timezone.utc).isoformat()
         }
 
@@ -143,7 +163,15 @@ async def join_group_order(
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         chat_ref.update({"participants": ArrayUnion([current_user["uid"]])})
         
-        msg = f"🛒 {user_name} joined! Added items (Est. ₹{total_price})"
+        # 🚨 DYNAMIC SYSTEM MESSAGE BASED ON HYBRID INPUT
+        added_text = ""
+        if payload.cart_link:
+            added_text = f"Added a Shared Cart Link: {payload.cart_link}"
+        else:
+            items_str = ", ".join([f"{i.quantity}x {i.item_name}" for i in payload.items])
+            added_text = f"Added manually: {items_str} (Est. ₹{total_price})"
+
+        msg = f"👋 {user_name} joined from {payload.block}!\n{added_text}"
         chat_ref.collection("messages").add({
             "sender_id": "system", "sender_name": "Cart Pool Bot", "text": msg, 
             "timestamp": datetime.now(timezone.utc).isoformat()
@@ -154,13 +182,74 @@ async def join_group_order(
         if pool.get("host_id") and pool["host_id"] != current_user["uid"]:
             await request.app.state.redis.enqueue_job(
                 'process_push_notification',
-                pool["host_id"], # user_id
-                f"🛒 Someone joined your {pool['app_name']} pool!", # title
-                f"{user_name} added items worth ₹{total_price} to your order list.", # body
-                f"/chat/{pool['chat_room_id']}" # url
+                pool["host_id"], 
+                f"🛒 Someone joined your {pool['app_name']} pool!", 
+                f"{user_name} just added items to your order list.", 
+                f"/chat/{pool['chat_room_id']}" 
             )
 
         return {"message": "Joined successfully!"}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+
+# 🚨 NEW: ROUTE FOR A JOINER TO UPDATE THEIR OWN CART
+@router.put("/{pool_id}/participants/me", tags=["Group Orders"])
+async def update_my_cart(
+    pool_id: str,
+    payload: PoolJoin,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Allows a joiner to edit their cart link or manual items before the order is locked."""
+    try:
+        pool_ref = db.collection("group_orders").document(pool_id)
+        pool_doc = pool_ref.get()
+        if not pool_doc.exists: 
+            raise HTTPException(status_code=404, detail="Order not found.")
+
+        pool = pool_doc.to_dict()
+        if pool["status"] != "open": 
+            raise HTTPException(status_code=400, detail="Cannot edit. Order is already locked.")
+
+        uid = current_user["uid"]
+        participants = pool.get("participants", [])
+
+        # Find the user's specific entry in the array
+        participant_index = next((i for i, p in enumerate(participants) if p["user_id"] == uid), None)
+        if participant_index is None:
+            raise HTTPException(status_code=404, detail="You are not in this order.")
+
+        user_name = participants[participant_index]["user_name"]
+        total_price = sum(item.estimated_price * item.quantity for item in payload.items)
+
+        # Update their specific data
+        participants[participant_index].update({
+            "contact_number": payload.contact_number,
+            "block": payload.block,
+            "cart_link": payload.cart_link,
+            "items": [item.model_dump() for item in payload.items],
+            "total_estimated_price": total_price
+        })
+
+        pool_ref.update({
+            "participants": participants,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
+
+        # Send an automated chat message about the update
+        chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
+        added_text = f"Updated to Shared Cart Link: {payload.cart_link}" if payload.cart_link else f"Updated manual items (Est. ₹{total_price})"
+        msg = f"🔄 {user_name} updated their cart!\n{added_text}"
+        
+        chat_ref.collection("messages").add({
+            "sender_id": "system", "sender_name": "Cart Pool Bot", "text": msg, 
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
+
+        return {"message": "Cart updated successfully!"}
+
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
@@ -169,7 +258,7 @@ async def join_group_order(
 async def update_pool_status(
     pool_id: str, 
     payload: PoolStatusUpdate, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request, 
     current_user: dict = Depends(get_current_user)
 ):
     try:
@@ -237,12 +326,72 @@ async def update_pool_status(
         return {"status": payload.status}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
+# 🚨 THE HOST PRICE OVERRIDE ROUTE
+@router.put("/{pool_id}/participants/{user_id}/price")
+async def update_participant_price(
+    pool_id: str,
+    user_id: str,
+    payload: ParticipantPriceUpdate,
+    request: Request,
+    current_user: dict = Depends(get_current_user)
+):
+    """Allows the Host to securely override a joiner's total cart value based on the final app checkout."""
+    try:
+        pool_ref = db.collection("group_orders").document(pool_id)
+        pool_doc = pool_ref.get()
+        if not pool_doc.exists:
+            raise HTTPException(status_code=404, detail="Order not found.")
+
+        pool = pool_doc.to_dict()
+
+        # Security: Only the Host can edit prices
+        if pool.get("host_id") != current_user["uid"]:
+            raise HTTPException(status_code=403, detail="Only the Host can edit participant prices.")
+
+        # Find the specific participant
+        participants = pool.get("participants", [])
+        target_participant = next((p for p in participants if p["user_id"] == user_id), None)
+
+        if not target_participant:
+            raise HTTPException(status_code=404, detail="Participant not found in this order.")
+
+        # Save old price for transparency logging
+        old_price = target_participant.get("total_estimated_price", 0)
+        target_participant["total_estimated_price"] = payload.new_price
+
+        # Push back the modified array
+        pool_ref.update({
+            "participants": participants,
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+
+        # Send Transparency Audit Message to the Group Chat
+        chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
+        msg = f"🤖 Note: The Host updated {target_participant['user_name']}'s total from ₹{old_price} to ₹{payload.new_price} based on the final checkout."
+        
+        chat_ref.collection("messages").add({
+            "sender_id": "system",
+            "sender_name": "Cart Pool Bot",
+            "text": msg,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        chat_ref.update({
+            "last_message": msg, 
+            "updated_at": datetime.now(timezone.utc).isoformat()
+        })
+
+        return {"message": "Participant price updated successfully.", "new_price": payload.new_price}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{pool_id}/participants/{user_id}")
 async def kick_participant(
     pool_id: str, 
     user_id: str, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request, 
     current_user: dict = Depends(get_current_user)
 ):
     """Allows the Host to remove a user from an open group order."""
@@ -265,12 +414,10 @@ async def kick_participant(
         participants = pool.get("participants", [])
         participant_ids = pool.get("participant_ids", [])
 
-        # Find the user being kicked to get their name
         kicked_user = next((p for p in participants if p["user_id"] == user_id), None)
         if not kicked_user:
             raise HTTPException(status_code=404, detail="User is not in this order.")
 
-        # Rebuild arrays without the kicked user
         updated_participants = [p for p in participants if p["user_id"] != user_id]
         updated_participant_ids = [uid for uid in participant_ids if uid != user_id]
 
@@ -279,11 +426,9 @@ async def kick_participant(
             "participant_ids": updated_participant_ids
         })
 
-        # Remove them from the Chat Room access array
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         chat_ref.update({"participants": ArrayRemove([user_id])})
 
-        # Send Bot Notification
         msg = f"🚫 {kicked_user['user_name']} was removed from the order."
         chat_ref.collection("messages").add({
             "sender_id": "system", 
@@ -313,10 +458,10 @@ async def kick_participant(
 @router.post("/{pool_id}/settle")
 async def settle_group_order(
     pool_id: str, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request, 
     current_user: dict = Depends(get_current_user)
 ):
-    """Closes the order and archives it (Simplified logic)."""
+    """Closes the order and archives it."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
@@ -329,13 +474,11 @@ async def settle_group_order(
         if pool["status"] != "delivered":
             raise HTTPException(status_code=400, detail="Order must be marked as 'Delivered' before settling.")
 
-        # Mark order as settled so it disappears from the active feeds
         pool_ref.update({
             "status": "settled", 
             "settled_at": datetime.now(timezone.utc).isoformat()
         })
 
-        # Final Chat Notification
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         msg = "✅ This order has been settled and closed by the Host."
 
@@ -345,7 +488,6 @@ async def settle_group_order(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER FINAL REDIS BACKGROUND ALERT TO ALL PARTICIPANTS
         participant_ids = pool.get("participant_ids", [])
         if participant_ids:
             for uid in participant_ids:

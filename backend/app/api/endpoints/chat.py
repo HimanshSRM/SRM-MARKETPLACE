@@ -1,5 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from google.cloud import firestore
+from pydantic import BaseModel
+from typing import Optional
 
 from app.core.firebase import db
 from app.core.security import get_transacting_user, get_current_user, get_active_user 
@@ -14,13 +16,18 @@ from app.models.chat import (
 
 router = APIRouter()
 
+# 🚨 NEW SCHEMA: For saving Phone/UPI post-deal
+class ContactUpdate(BaseModel):
+    phone: Optional[str] = None
+    upi_id: Optional[str] = None
+
 # ==========================================
 # 1. INITIATE CHAT (1-on-1 Marketplace)
 # ==========================================
 @router.post("/initiate", tags=["Chat & Bidding"])
 async def initiate_chat(
     data: ChatInitiate, 
-    request: Request, # 🚨 Added Request to access Redis
+    request: Request, 
     user: dict = Depends(get_transacting_user)
 ):
     sender_id = user.get("uid")
@@ -53,6 +60,7 @@ async def initiate_chat(
                 "listing_id": data.listing_id,
                 "buyer_id": sender_id,
                 "seller_id": data.owner_id,
+                "shop_id": data.owner_id if owner_role == "shop_verified" else None, # 🚨 Added Shop ID metadata for frontend
                 "last_message": data.initial_message,
                 "updated_at": firestore.SERVER_TIMESTAMP,
                 "is_ticket": False
@@ -75,7 +83,6 @@ async def initiate_chat(
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
-        # 🚨 THE REDIS FIX: Trigger the background worker
         await request.app.state.redis.enqueue_job(
             'process_push_notification',
             data.owner_id,
@@ -91,6 +98,7 @@ async def initiate_chat(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ==========================================
 # 2. GET USER INBOX (Highly Optimized Bulk Fetch)
 # ==========================================
@@ -101,12 +109,10 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
         role = user.get("role", "guest")
         email = user.get("email", "")
         
-        # 1. Fetch all raw room documents first (Converted to lists immediately)
         raw_buying = list(db.collection("chat_rooms").where("buyer_id", "==", uid).stream())
         raw_selling = list(db.collection("chat_rooms").where("seller_id", "==", uid).stream())
         raw_group = list(db.collection("chat_rooms").where("participants", "array_contains", uid).stream())
         
-        # 2. Extract ALL unique IDs we need to look up
         needed_listing_ids = set()
         needed_user_ids = set()
         
@@ -115,17 +121,13 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
             data = doc.to_dict()
             if not data.get("listing_title") and data.get("listing_id"):
                 needed_listing_ids.add(data.get("listing_id"))
-                
             if not data.get("buyer_name") and data.get("buyer_id"):
                 needed_user_ids.add(data.get("buyer_id"))
-                
             if not data.get("seller_name") and data.get("seller_id"):
                 needed_user_ids.add(data.get("seller_id"))
-                
             if data.get("type") == "group_order" and not data.get("host_name") and data.get("host_id"):
                 needed_user_ids.add(data.get("host_id"))
 
-        # 3. BULK FETCH: Get all missing Listings in ONE network trip
         listing_cache = {}
         if needed_listing_ids:
             listing_refs = [db.collection("listings").document(l_id) for l_id in needed_listing_ids]
@@ -134,7 +136,6 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
                     d = doc.to_dict()
                     listing_cache[doc.id] = d.get("title") or d.get("item_name") or d.get("product_name")
         
-        # 4. BULK FETCH: Get all missing Users in ONE network trip
         user_cache = {}
         if needed_user_ids:
             user_refs = [db.collection("users").document(u_id) for u_id in needed_user_ids]
@@ -143,7 +144,6 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
                     d = doc.to_dict()
                     user_cache[doc.id] = d.get("name") or d.get("email")
 
-        # 5. Assemble the final arrays in memory instantly
         buying_chats, selling_chats, support_tickets, pool_chats = [], [], [], []
         
         def process_room(doc):
@@ -152,16 +152,12 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
             if "updated_at" in room and room["updated_at"]: 
                 room["updated_at"] = str(room["updated_at"])
                 
-            # Inject the missing data directly from our high-speed cache
             if not room.get("listing_title") and room.get("listing_id"):
                 room["listing_title"] = listing_cache.get(room.get("listing_id"))
-                
             if not room.get("buyer_name") and room.get("buyer_id"):
                 room["buyer_name"] = user_cache.get(room.get("buyer_id"))
-                
             if not room.get("seller_name") and room.get("seller_id"):
                 room["seller_name"] = user_cache.get(room.get("seller_id"))
-                
             if room.get("type") == "group_order" and not room.get("host_name") and room.get("host_id"):
                 room["host_name"] = user_cache.get(room.get("host_id"))
                 
@@ -179,14 +175,12 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
                 selling_chats.append(room)
 
         for doc in raw_group:
-            # Skip if already processed in buying/selling to prevent duplicates
             if any(r["id"] == doc.id for r in buying_chats) or any(r["id"] == doc.id for r in selling_chats):
                 continue
             room = process_room(doc)
             if room and room.get("type") == "group_order":
                 pool_chats.append(room)
 
-        # Handle Admin Tickets
         if role == "admin" or email == "himanshyadav202@gmail.com":
             admin_tickets_query = db.collection("chat_rooms").where("seller_id", "==", "ADMIN_TEAM").stream()
             for doc in admin_tickets_query:
@@ -207,6 +201,7 @@ async def get_user_inbox(user: dict = Depends(get_current_user)):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # ==========================================
 # 3. GET CHAT HISTORY 
@@ -235,7 +230,6 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
         is_buyer = room_data.get("buyer_id") == uid
         is_seller = room_data.get("seller_id") == uid
         is_admin_support = room_data.get("seller_id") == "ADMIN_TEAM" and (role == "admin" or email == "himanshyadav202@gmail.com")
-        
         is_participant = uid in room_data.get("participants", [])
         
         if not (is_buyer or is_seller or is_admin_support or is_participant):
@@ -265,14 +259,15 @@ async def get_chat_history(room_id: str, user: dict = Depends(get_current_user))
         print("Error fetching messages:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ==========================================
-# 4. SEND MESSAGE
+# 4. SEND MESSAGE & AUTO-REPLY INTERCEPTOR
 # ==========================================
 @router.post("/{room_id}/messages", tags=["Chat & Bidding"])
 async def send_message(
     room_id: str, 
     req: dict, 
-    request: Request, # 🚨 Added Request to access Redis
+    request: Request, 
     user: dict = Depends(get_current_user)
 ):
     try:
@@ -292,7 +287,6 @@ async def send_message(
         is_buyer = room_data.get("buyer_id") == uid
         is_seller = room_data.get("seller_id") == uid
         is_admin_support = room_data.get("seller_id") == "ADMIN_TEAM" and (role == "admin" or email == "himanshyadav202@gmail.com")
-        
         is_participant = uid in room_data.get("participants", [])
         
         if not (is_buyer or is_seller or is_admin_support or is_participant):
@@ -302,7 +296,6 @@ async def send_message(
         if is_banned:
             if room_data.get("seller_id") != "ADMIN_TEAM":
                 raise HTTPException(status_code=403, detail="Suspended accounts can only reply in official Admin Support threads.")
-            
             if room_data.get("status") == "resolved":
                 raise HTTPException(status_code=403, detail="This support ticket has been closed by the Admin Team.")
             
@@ -323,10 +316,12 @@ async def send_message(
         }
         msg_ref.set(msg_data)
         
+        # 🚨 THE FIX 1: Clear the hidden_by array to automatically unhide the chat
         room_ref.update({
             "last_message": msg_data["text"],
             "last_sender_id": uid,
-            "updated_at": firestore.SERVER_TIMESTAMP
+            "updated_at": firestore.SERVER_TIMESTAMP,
+            "hidden_by": [] 
         })
 
         if room_data.get("is_ticket"):
@@ -337,26 +332,61 @@ async def send_message(
                     update_data["admin_response"] = msg_data["text"]
                 t.reference.update(update_data)
 
+        # 🚨 THE AUTO-REPLY INTERCEPTOR LOGIC
+        seller_id = room_data.get("seller_id")
+        if is_buyer and seller_id and seller_id != "ADMIN_TEAM":
+            shop_doc = db.collection("shops").document(seller_id).get()
+            if shop_doc.exists:
+                shop_data = shop_doc.to_dict()
+                quick_replies = shop_data.get("quick_replies", [])
+                
+                # Check if user's text perfectly matches any configured trigger
+                matched_reply = next((qr for qr in quick_replies if qr.get("trigger", "").strip().lower() == msg_text.strip().lower()), None)
+                
+                if matched_reply:
+                    auto_msg_ref = room_ref.collection("messages").document()
+                    auto_reply_text = matched_reply.get("response", "")
+                    
+                    auto_msg_data = {
+                        "id": auto_msg_ref.id,
+                        "sender_id": seller_id,
+                        "sender_name": shop_data.get("shop_name", "Shop Auto-Reply"),
+                        "text": auto_reply_text,
+                        "is_bid": False,
+                        "created_at": firestore.SERVER_TIMESTAMP,
+                        "timestamp": firestore.SERVER_TIMESTAMP
+                    }
+                    auto_msg_ref.set(auto_msg_data)
+                    
+                    # 🚨 THE FIX 2: Clear the hidden_by array on Auto-Replies as well
+                    room_ref.update({
+                        "last_message": auto_reply_text,
+                        "last_sender_id": seller_id,
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                        "hidden_by": []
+                    })
+                    
+                    # Fire Push Notification back to the student instantly
+                    await request.app.state.redis.enqueue_job(
+                        'process_push_notification',
+                        uid, 
+                        f"💬 {shop_data.get('shop_name', 'Shop')}",
+                        auto_reply_text,
+                        f"/chat/{room_id}"
+                    )
+
         target_uids = []
-        
-        # 1. GROUP CHAT FIX
         if room_data.get("type") == "group_order":
-            # 🚨 BUG FIX: The field in chat_rooms is called 'participants', not 'participant_ids'
             participant_ids = room_data.get("participants", [])
             target_uids.extend([p for p in participant_ids if p != uid])
-            
-        # 2. 1-ON-1 AND SUPPORT CHAT FIX
         else:
             if is_buyer:
-                # The user is sending a message. Target the seller.
                 target_id = room_data.get("seller_id")
-                if target_id != "ADMIN_TEAM": # Don't try to send a push to the abstract admin team
+                if target_id != "ADMIN_TEAM": 
                     target_uids.append(target_id)
             else:
-                # The Admin (or Seller) is replying. Target the buyer!
                 target_uids.append(room_data.get("buyer_id"))
                 
-        # 🚨 TRIGGER THE REDIS BACKGROUND WORKER FOR EACH RECIPIENT
         for target_id in target_uids:
             if target_id:
                 title = f"💬 {user_name}" if room_data.get("type") == "group_order" else "💬 New Message"
@@ -381,6 +411,7 @@ async def send_message(
         print("Send message error:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
+
 # ==========================================
 # 5. ACCEPT BID
 # ==========================================
@@ -388,7 +419,7 @@ async def send_message(
 async def accept_bid(
     room_id: str, 
     message_id: str, 
-    request: Request, # 🚨 Added Request to access Redis
+    request: Request, 
     user: dict = Depends(get_transacting_user)
 ):
     try:
@@ -411,13 +442,13 @@ async def accept_bid(
             raise HTTPException(status_code=404, detail="Listing not found.")
             
         listing_ref.update({"status": "sold"})
+        room_ref.update({"status": "sold"}) # Keep room status in sync
         
         message_ref = room_ref.collection("messages").document(message_id)
         message_ref.update({"bid_status": BidStatus.ACCEPTED.value})
         
         buyer_id = room_data.get("buyer_id")
         if buyer_id:
-            # 🚨 THE REDIS FIX: Trigger the background worker
             await request.app.state.redis.enqueue_job(
                 'process_push_notification',
                 buyer_id,
@@ -557,5 +588,76 @@ async def create_support_ticket(
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# 9. REVERT DEAL (Seller Only)
+# ==========================================
+@router.post("/{room_id}/revert", tags=["Chat & Bidding"])
+async def revert_deal(room_id: str, current_user: dict = Depends(get_current_user)):
+    """Allows the seller to revert a collapsed deal."""
+    try:
+        room_ref = db.collection("chat_rooms").document(room_id)
+        room = room_ref.get().to_dict()
+        
+        if not room or room.get("seller_id") != current_user["uid"]:
+            raise HTTPException(status_code=403, detail="Only the seller can revert this deal.")
+
+        # 1. Revert the Chat Room
+        room_ref.update({"status": "active", "updated_at": firestore.SERVER_TIMESTAMP})
+
+        # 2. Revert the Listing (if applicable)
+        if room.get("listing_id"):
+            db.collection("listings").document(room["listing_id"]).update({
+                "status": "active", 
+                "buyer_id": None
+            })
+
+        # 3. Drop a System Message
+        msg = "🔄 The seller has reverted this deal. The item is back on the market."
+        room_ref.collection("messages").add({
+            "sender_id": "system", "sender_name": "System", "text": msg,
+            "timestamp": firestore.SERVER_TIMESTAMP
+        })
+        
+        return {"message": "Deal reverted successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# 10. SAVE CHAT CONTACT INFO (Global + Room)
+# ==========================================
+@router.post("/{room_id}/contact", tags=["Chat & Bidding"])
+async def update_chat_contact(room_id: str, payload: ContactUpdate, current_user: dict = Depends(get_current_user)):
+    """Saves missing contact info to the user's global profile AND the active chat room."""
+    try:
+        uid = current_user["uid"]
+        room_ref = db.collection("chat_rooms").document(room_id)
+        room = room_ref.get().to_dict()
+
+        user_updates = {}
+        room_updates = {}
+
+        if payload.phone:
+            user_updates["phone"] = payload.phone
+            if room.get("buyer_id") == uid: room_updates["buyer_phone"] = payload.phone
+            if room.get("seller_id") == uid: room_updates["seller_phone"] = payload.phone
+
+        if payload.upi_id:
+            user_updates["upi_id"] = payload.upi_id
+            if room.get("seller_id") == uid: room_updates["seller_upi"] = payload.upi_id
+
+        # Update global profile so they never have to type it again
+        if user_updates:
+            db.collection("users").document(uid).update(user_updates)
+
+        # Update the chat room so the other person sees it instantly
+        if room_updates:
+            room_ref.update(room_updates)
+
+        return {"message": "Contact info saved!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

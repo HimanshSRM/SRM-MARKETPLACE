@@ -1,58 +1,79 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { createShopProfile } from '@/lib/api'; // Make sure this matches your api.ts export!
+import { createShopProfile, checkMyShop, restoreShopProfile } from '@/lib/api'; 
 
-// If your API expects this exact interface, we define it here:
 export interface ShopApplicationData {
   shop_name: string;
-  description: string;
-  location: string;
+  tagline: string;
+  block: string;
   contact_number: string;
-  contact_email: string;
 }
 
 export default function ShopApplicationPage() {
   const router = useRouter();
   const { profile, setProfile, isLoading: isAuthLoading } = useAuth();
   
+  // 🚨 OPTIMIZED: Matched exactly to the new backend schema
   const [formData, setFormData] = useState<ShopApplicationData>({
     shop_name: '',
-    description: '',
-    location: '',
+    tagline: '',
+    block: '',
     contact_number: '',
-    contact_email: '',
   });
 
-  // --- PERSISTENT STATE: FORM DRAFT ---
-  // 1. Load saved form data on initial render
+  const [isLoading, setIsLoading] = useState(false);
+  const [isPageLoading, setIsPageLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Intercept states
+  const [previousShop, setPreviousShop] = useState<any>(null);
+  const [choiceMade, setChoiceMade] = useState(false);
+  const [isOverwriting, setIsOverwriting] = useState(false);
+
+  // --- PERSISTENT STATE ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const savedForm = localStorage.getItem('draft_shopApplication');
       if (savedForm) {
-        try {
-          setFormData(JSON.parse(savedForm));
-        } catch (e) {
-          console.error('Failed to parse saved application draft');
+        try { 
+          setFormData(JSON.parse(savedForm)); 
+        } catch (e) { 
+          console.error('Failed to parse saved application draft'); 
         }
       }
     }
   }, []);
 
-  // 2. Save form data to memory whenever it changes
   useEffect(() => {
     localStorage.setItem('draft_shopApplication', JSON.stringify(formData));
   }, [formData]);
-  
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // 🚨 NEW: State to hold the "Old Shop" choice
-  const [previousShop, setPreviousShop] = useState<any>(null);
-  const [choiceMade, setChoiceMade] = useState(false);
-  const [isOverwriting, setIsOverwriting] = useState(false);
+  // --- INITIAL CHECK ---
+  useEffect(() => {
+    if (isAuthLoading) return;
+
+    const fetchShopStatus = async () => {
+      if (!profile) { 
+        setIsPageLoading(false); 
+        return; 
+      }
+      try {
+        const check = await checkMyShop();
+        if (check.has_shop) {
+          setPreviousShop(check.shop_data);
+        }
+      } catch (e) { 
+        console.error("Error checking shop status", e); 
+      } finally { 
+        setIsPageLoading(false); 
+      }
+    };
+
+    fetchShopStatus();
+  }, [profile, isAuthLoading]);
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -64,29 +85,22 @@ export default function ShopApplicationPage() {
     setIsLoading(true);
 
     try {
-      // 🚨 CLEANUP: API Wrapper handles auth automatically!
-      // 1. Submit to FastAPI (Passing the overwrite flag)
       const response = await createShopProfile(formData, isOverwriting);
 
-      // 🚨 The Intercept: Backend found an old shop and we haven't made a choice yet!
       if (response.status === 'exists' && !isOverwriting) {
         setPreviousShop(response.shop_data);
         setIsLoading(false);
-        return; // Stop the form submission and show the choice UI
+        return;
       }
 
-      // 2. Update local context 
       if (profile) {
-        setProfile({ ...profile, role: 'student' }); // Set back to student while pending
+        setProfile({ ...profile, role: 'student' });
       }
 
-      // 🚨 CLEAR DRAFT ON SUCCESS
       localStorage.removeItem('draft_shopApplication');
 
-      // 3. Route back to directory
       alert("Shop profile submitted successfully! Waiting for admin verification.");
       router.push('/shops');
-      
     } catch (err: any) {
       setError(err.message || 'Could not submit application. Please try again.');
     } finally {
@@ -94,40 +108,40 @@ export default function ShopApplicationPage() {
     }
   };
 
-  // 🚨 THE HANDLERS FOR THEIR CHOICE
-  const handleRestoreOldShop = () => {
-    setFormData({
-      shop_name: previousShop.shop_name || previousShop.name || '',
-      description: previousShop.description || '',
-      location: previousShop.location || '',
-      contact_number: previousShop.contact_number || '',
-      contact_email: previousShop.contact_email || '',
-    });
-    setChoiceMade(true);
-    setIsOverwriting(true); 
+  const handleRestoreOldShop = async () => {
+    if (!window.confirm("Restore your previous shop and catalog?")) return;
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      await restoreShopProfile();
+      if (profile) {
+        setProfile({ ...profile, role: 'student' });
+      }
+      router.push('/shops/dashboard');
+    } catch (err: any) {
+      setError("Failed to restore shop. Please try again.");
+      setIsLoading(false);
+    }
   };
 
   const handleStartFresh = () => {
     if (!window.confirm("Are you sure? This will PERMANENTLY delete your old shop and all its items!")) return;
-    setFormData({ shop_name: '', description: '', location: '', contact_number: '', contact_email: '' });
+    setFormData({ shop_name: '', tagline: '', block: '', contact_number: '' });
     setChoiceMade(true);
     setIsOverwriting(true);
-    // Clear any existing drafts since they want to start fresh
     localStorage.removeItem('draft_shopApplication');
   };
 
-  // 🚨 1. Wait for Firebase to finish checking
-  if (isAuthLoading) {
+  if (isAuthLoading || isPageLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
-        {/* Note: I made the spinner purple to match your shop branding! */}
         <div className="w-12 h-12 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin mb-4"></div>
         <p className="font-bold text-gray-500">Loading Application...</p>
       </div>
     );
   }
 
-  // 🚨 2. Safe fallback if they actually aren't logged in
   if (!profile) {
     return <div className="p-20 text-center font-bold text-red-500">Please log in to apply for a shop.</div>;
   }
@@ -136,7 +150,6 @@ export default function ShopApplicationPage() {
     <div className="min-h-screen bg-gray-50 py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-2xl mx-auto bg-white p-8 rounded-2xl shadow-sm border border-gray-100">
         
-        {/* 🚨 THE INTERCEPT UI: If we found an old shop and they haven't chosen yet */}
         {previousShop && !choiceMade ? (
           <div className="text-center animate-fade-in-up">
             <div className="w-20 h-20 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center mx-auto mb-6 text-3xl font-black">
@@ -147,12 +160,19 @@ export default function ShopApplicationPage() {
               We noticed you previously registered a shop named <strong className="text-gray-900">"{previousShop.shop_name}"</strong>. What would you like to do?
             </p>
             
+            {error && (
+              <div className="mb-6 p-4 rounded-lg bg-red-50 text-red-600 text-sm">
+                {error}
+              </div>
+            )}
+
             <div className="space-y-4">
               <button 
                 onClick={handleRestoreOldShop}
-                className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl transition shadow-sm"
+                disabled={isLoading}
+                className="w-full py-4 bg-purple-600 hover:bg-purple-700 text-white font-bold rounded-xl transition shadow-sm disabled:opacity-50"
               >
-                ♻️ Reactivate "{previousShop.shop_name}"
+                {isLoading ? 'Restoring...' : `♻️ Reactivate "${previousShop.shop_name}"`}
               </button>
               
               <div className="relative py-4">
@@ -162,14 +182,14 @@ export default function ShopApplicationPage() {
 
               <button 
                 onClick={handleStartFresh}
-                className="w-full py-4 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold rounded-xl transition"
+                disabled={isLoading}
+                className="w-full py-4 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 font-bold rounded-xl transition disabled:opacity-50"
               >
                 🧨 Delete Old Shop & Start a New Business
               </button>
             </div>
           </div>
         ) : (
-          /* --- THE STANDARD REGISTRATION FORM --- */
           <div className="animate-fade-in-up">
             <div className="mb-8">
               <h2 className="text-3xl font-bold text-gray-900">
@@ -189,7 +209,6 @@ export default function ShopApplicationPage() {
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
                 
-                {/* Shop Name */}
                 <div className="sm:col-span-2">
                   <label htmlFor="shop_name" className="block text-sm font-medium text-gray-700 mb-1">Shop Name</label>
                   <input
@@ -203,51 +222,36 @@ export default function ShopApplicationPage() {
                   />
                 </div>
 
-                {/* Description */}
                 <div className="sm:col-span-2">
-                  <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">What do you sell?</label>
-                  <textarea
-                    name="description"
-                    id="description"
-                    rows={3}
+                  <label htmlFor="tagline" className="block text-sm font-medium text-gray-700 mb-1">Short Tagline</label>
+                  <input
+                    type="text"
+                    name="tagline"
+                    id="tagline"
+                    maxLength={60}
                     required
-                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all resize-none"
-                    value={formData.description}
+                    placeholder="e.g., Professional laptop repairs & accessories."
+                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
+                    value={formData.tagline}
                     onChange={handleChange}
                   />
                 </div>
 
-                {/* Location */}
                 <div className="sm:col-span-2">
-                  <label htmlFor="location" className="block text-sm font-medium text-gray-700 mb-1">Campus Location (or Online)</label>
+                  <label htmlFor="block" className="block text-sm font-medium text-gray-700 mb-1">Campus Block / Location</label>
                   <input
                     type="text"
-                    name="location"
-                    id="location"
+                    name="block"
+                    id="block"
                     required
                     placeholder="e.g., Java Tech Park, Block C"
                     className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
-                    value={formData.location}
+                    value={formData.block}
                     onChange={handleChange}
                   />
                 </div>
 
-                {/* Contact Email */}
-                <div>
-                  <label htmlFor="contact_email" className="block text-sm font-medium text-gray-700 mb-1">Business Email</label>
-                  <input
-                    type="email"
-                    name="contact_email"
-                    id="contact_email"
-                    required
-                    className="w-full px-4 py-2 rounded-lg border border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-purple-500 outline-none transition-all"
-                    value={formData.contact_email}
-                    onChange={handleChange}
-                  />
-                </div>
-
-                {/* Contact Number */}
-                <div>
+                <div className="sm:col-span-2">
                   <label htmlFor="contact_number" className="block text-sm font-medium text-gray-700 mb-1">Phone Number</label>
                   <input
                     type="tel"
