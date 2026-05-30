@@ -50,7 +50,6 @@ export default function InboxPage() {
 
     const fetchInbox = async () => {
       try {
-        // API Wrapper handles auth automatically!
         const data = await getInbox();
         
         setInboxData({
@@ -83,7 +82,6 @@ export default function InboxPage() {
       const handleFocus = () => fetchInbox();
       window.addEventListener('focus', handleFocus);
 
-      // Cleanup
       return () => window.removeEventListener('focus', handleFocus);
     }
   }, [profile, router, isAuthLoading]);
@@ -144,7 +142,7 @@ export default function InboxPage() {
           </div>
           <button 
             onClick={() => router.push('/')}
-            className="px-5 py-2.5 bg-white border border-gray-300 rounded-xl text-sm font-semibold hover:bg-gray-50 transition shadow-sm w-fit"
+            className="px-5 py-2.5 bg-white border border-gray-200 rounded-xl text-sm font-bold hover:bg-gray-50 transition shadow-sm w-full sm:w-auto"
           >
             ← Back to Feed
           </button>
@@ -187,15 +185,15 @@ export default function InboxPage() {
         </div>
 
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-sm font-medium">
+          <div className="mb-6 p-4 bg-red-50 border border-red-100 text-red-600 rounded-xl text-sm font-medium animate-fade-in-up">
             {error}
           </div>
         )}
 
-        {/* Inbox List Area */}
-        <div className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden">
+        {/* 🚨 THE UPGRADED INBOX LIST AREA */}
+        <div>
           {uniqueRooms.length === 0 ? (
-            <div className="p-16 text-center">
+            <div className="bg-white p-12 sm:p-16 text-center rounded-3xl shadow-sm border border-gray-200">
               <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
                 <svg className="w-10 h-10 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -219,7 +217,7 @@ export default function InboxPage() {
               </button>
             </div>
           ) : (
-            <div className="divide-y divide-gray-50">
+            <div className="space-y-4"> {/* 🚨 Replacing divide-y with space-y-4 for floating cards */}
               {uniqueRooms.map((room) => {
                 const roomId = room.id || room.room_id;
                 const isSold = room.status === 'sold';
@@ -232,7 +230,6 @@ export default function InboxPage() {
 
                 const isValidString = (str: any) => typeof str === 'string' && str.trim() !== '' && str !== 'undefined' && str !== 'null';
 
-                // 🚨 SMART UX: Clean Person Names (No random IDs)
                 let otherPersonName = 'User';
                 if (isBuying) {
                   otherPersonName = isValidString(room.seller_name) ? room.seller_name : (isValidString(room.seller_email) ? room.seller_email : 'Seller');
@@ -253,7 +250,6 @@ export default function InboxPage() {
                   else if (app.includes('blinkit') || app.includes('zepto')) poolIcon = '🛒';
                 }
 
-                // 🚨 SMART UX: Clean Titles (Item is the Star)
                 let displayTitle = 'Marketplace Item';
                 if (isSupport) {
                     displayTitle = isValidString(room.subject) ? room.subject : 'Support Ticket';
@@ -264,7 +260,6 @@ export default function InboxPage() {
                     if (isValidString(itemTitle)) {
                         displayTitle = itemTitle;
                     } else {
-                        // Extract from automated message if possible
                         const autoMsgMatch = room.last_message?.match(/(?:listing for|interested in)\s*["'“‘]?([^"'””]+)["'””]?/i);
                         if (autoMsgMatch && autoMsgMatch[1]) {
                             displayTitle = autoMsgMatch[1].trim(); 
@@ -277,11 +272,12 @@ export default function InboxPage() {
                     href={`/chat/${roomId}`} 
                     key={roomId}
                     prefetch={false}
-                    className={`flex items-center justify-between p-6 transition-all cursor-pointer group relative ${isPool ? 'hover:bg-purple-50/50' : 'hover:bg-gray-50'}`}
+                    // 🚨 Individual floating card styling here:
+                    className={`bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between transition-all cursor-pointer group relative hover:shadow-md ${isPool ? 'hover:border-purple-200' : 'hover:border-blue-200'}`}
                   >
-                    <div className="flex items-center gap-5 w-full pr-12"> 
+                    <div className="flex items-center gap-4 sm:gap-5 w-full pr-14 sm:pr-16"> 
                       {/* Avatar */}
-                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 transition-colors text-xl font-black ${
+                      <div className={`w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 transition-colors text-xl font-black shadow-sm ${
                         isSupport 
                           ? (isResolved ? 'bg-green-50 text-green-600' : 'bg-orange-50 text-orange-600')
                           : isPool 
@@ -295,7 +291,7 @@ export default function InboxPage() {
                       
                       {/* Chat Details */}
                       <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2 mb-1.5">
+                        <div className="flex items-center flex-wrap gap-2 mb-1.5">
                           {isBuying && <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-[10px] font-black uppercase tracking-wider rounded">Buying</span>}
                           {isSelling && <span className="px-2 py-0.5 bg-indigo-100 text-indigo-700 text-[10px] font-black uppercase tracking-wider rounded">Selling</span>}
                           {isSold && !isSupport && !isPool && <span className="px-2 py-0.5 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-wider rounded">Sold</span>}
@@ -312,17 +308,15 @@ export default function InboxPage() {
                           )}
                         </div>
 
-                        {/* 🚨 RESTRUCTURED: Title is the Item */}
-                        <h3 className={`text-lg font-bold text-gray-900 truncate transition-colors ${isPool ? 'group-hover:text-purple-600' : 'group-hover:text-blue-600'}`}>
+                        <h3 className={`text-base sm:text-lg font-bold text-gray-900 truncate transition-colors ${isPool ? 'group-hover:text-purple-600' : 'group-hover:text-blue-600'}`}>
                           {displayTitle}
                         </h3>
                         
-                        {/* 🚨 RESTRUCTURED: Subtitle is "Person Name • Message" */}
                         <p className="text-sm text-gray-500 mt-1 line-clamp-1 font-medium flex items-center gap-1.5">
-                          <span className="font-bold text-gray-700">
+                          <span className="font-bold text-gray-700 hidden sm:inline">
                             {isSupport ? 'System' : isPool ? 'Group' : cleanPersonName}
                           </span>
-                          <span className="text-gray-300">•</span>
+                          <span className="text-gray-300 hidden sm:inline">•</span>
                           <span className="truncate">
                             {isSupport 
                               ? (room.last_message || room.admin_response || room.description || "Open Ticket")
@@ -332,16 +326,16 @@ export default function InboxPage() {
                       </div>
                     </div>
 
-                    <div className="absolute right-6 flex items-center gap-3">
+                    <div className="absolute right-4 sm:right-6 flex flex-col sm:flex-row items-end sm:items-center gap-2 sm:gap-3">
                       {(room.updated_at || room.created_at) && (
-                        <span className="hidden sm:block text-xs text-gray-400 font-medium">
+                        <span className="text-[10px] sm:text-xs text-gray-400 font-bold sm:font-medium text-right">
                           {formatTime(room.updated_at || room.created_at)}
                         </span>
                       )}
                       
                       <button 
                         onClick={(e) => handleHideChat(e, roomId, activeTab)}
-                        className="p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all z-10"
+                        className="p-1.5 sm:p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all z-10"
                         title="Remove from Inbox"
                       >
                         <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">

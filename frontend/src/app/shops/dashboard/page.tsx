@@ -6,7 +6,7 @@ import { useAuth } from '@/context/AuthContext';
 import { 
   getLiveShops, 
   addCatalogItem, 
-  updateCatalogItem, // 🚨 Essential for editing
+  updateCatalogItem,
   deleteCatalogItem, 
   updateShopProfile, 
   updateShopStatus, 
@@ -43,15 +43,19 @@ function EditShopModal({ currentShop, onClose, onRefresh }: { currentShop: any, 
   };
 
   return (
+    // 🚨 RESPONSIVE FIX: Added max-h-[90vh] and overflow-y-auto for mobile keyboards
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl animate-fade-in-up">
+      <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl animate-fade-in-up max-h-[90vh] overflow-y-auto">
         <h2 className="text-2xl font-black text-gray-900 mb-6">Edit Shop Profile</h2>
         <form onSubmit={handleSubmit} className="space-y-4">
           <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Shop Name</label><input type="text" required value={formData.shop_name} onChange={(e) => setFormData({...formData, shop_name: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" /></div>
           <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Phone Number</label><input type="tel" required value={formData.contact_number} onChange={(e) => setFormData({...formData, contact_number: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" /></div>
           <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Block / Location</label><input type="text" value={formData.block} onChange={(e) => setFormData({...formData, block: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" /></div>
           <div><label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-1">Tagline / Short Description</label><textarea rows={2} required value={formData.tagline} onChange={(e) => setFormData({...formData, tagline: e.target.value})} className="w-full p-3 bg-gray-50 border border-gray-200 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm font-bold" /></div>
-          <div className="flex gap-3 pt-4 mt-2 border-t"><button type="button" onClick={onClose} className="flex-1 py-3 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200 transition">Cancel</button><button type="submit" disabled={isSaving} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition disabled:opacity-50">{isSaving ? 'Saving...' : 'Save Changes'}</button></div>
+          <div className="flex gap-3 pt-4 mt-2 border-t">
+            <button type="button" onClick={onClose} className="flex-1 py-3 bg-gray-100 text-gray-600 font-bold rounded-xl hover:bg-gray-200 transition">Cancel</button>
+            <button type="submit" disabled={isSaving} className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl hover:bg-blue-700 transition disabled:opacity-50">{isSaving ? 'Saving...' : 'Save Changes'}</button>
+          </div>
         </form>
       </div>
     </div>
@@ -75,7 +79,6 @@ export default function ShopDashboardPage() {
   const [noticeText, setNoticeText] = useState("");
   const [isNoticeActive, setIsNoticeActive] = useState(false);
 
-  // 🚨 RESTORED: Edit State
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [formData, setFormData] = useState({ name: '', price: '', category: 'General', in_stock: true });
 
@@ -139,7 +142,6 @@ export default function ShopDashboardPage() {
     finally { setIsSubmitting(false); }
   };
 
-  // 🚨 RESTORED: Edit Item Handlers
   const handleEditClick = (item: any) => {
     setEditingItemId(item.id);
     setFormData({
@@ -168,12 +170,10 @@ export default function ShopDashboardPage() {
       };
 
       if (editingItemId) {
-        // Update Existing Item
         await updateCatalogItem(editingItemId, payload);
         setCatalog(catalog.map(item => item.id === editingItemId ? { ...item, ...payload } : item));
         handleCancelEdit();
       } else {
-        // Add New Item
         const response : any = await addCatalogItem(payload);
         setCatalog([{ id: response.item_id || Date.now().toString(), ...payload }, ...catalog]);
         setFormData({ name: '', price: '', category: 'General', in_stock: true });
@@ -213,18 +213,20 @@ export default function ShopDashboardPage() {
       {isEditModalOpen && <EditShopModal currentShop={myShop} onClose={() => setIsEditModalOpen(false)} onRefresh={loadDashboardData} />}
 
       <div className="max-w-7xl mx-auto space-y-6">
-        {/* HEADER */}
+        
+        {/* 🚨 RESPONSIVE FIX: HEADER */}
         <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div>
-            <h1 className="text-3xl font-black text-gray-900 tracking-tight">{myShop.shop_name}</h1>
-            <div className="flex gap-3 mt-2">
-              <button onClick={() => setIsEditModalOpen(true)} className="text-xs px-3 py-1.5 bg-gray-100 font-bold rounded-lg">⚙️ Edit Details</button>
-              <Link href={`/shops/${myShop.id}`} className="text-xs px-3 py-1.5 bg-blue-50 text-blue-700 font-bold rounded-lg">👀 Public Page</Link>
+          <div className="w-full">
+            <h1 className="text-3xl font-black text-gray-900 tracking-tight break-words">{myShop.shop_name}</h1>
+            <div className="flex flex-wrap gap-3 mt-3">
+              <button onClick={() => setIsEditModalOpen(true)} className="flex-1 sm:flex-none text-center text-xs px-4 py-2.5 bg-gray-100 hover:bg-gray-200 font-bold rounded-xl transition">⚙️ Edit Details</button>
+              <Link href={`/shops/${myShop.id}`} className="flex-1 sm:flex-none text-center text-xs px-4 py-2.5 bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold rounded-xl transition">👀 Public Page</Link>
             </div>
           </div>
-          <div className="flex items-center gap-4 bg-gray-50 p-2 pl-4 rounded-2xl border border-gray-200">
+          
+          <div className="w-full md:w-auto flex items-center justify-between gap-4 bg-gray-50 p-3 pl-5 rounded-2xl border border-gray-200">
             <div><p className="text-sm font-bold text-gray-900">Accepting Inquiries</p></div>
-            <button onClick={handleToggleStatus} className={`relative h-8 w-14 rounded-full transition-colors ${isOpen ? 'bg-green-500' : 'bg-gray-300'}`}><span className={`inline-block h-6 w-6 rounded-full bg-white transition-transform ${isOpen ? 'translate-x-7' : 'translate-x-1'}`} /></button>
+            <button onClick={handleToggleStatus} className={`relative h-8 w-14 rounded-full transition-colors shrink-0 ${isOpen ? 'bg-green-500' : 'bg-gray-300'}`}><span className={`inline-block h-6 w-6 rounded-full bg-white transition-transform ${isOpen ? 'translate-x-7' : 'translate-x-1'}`} /></button>
           </div>
         </div>
 
@@ -236,12 +238,14 @@ export default function ShopDashboardPage() {
               <h2 className="text-lg font-bold text-gray-900 mb-4">📣 Notice Board</h2>
               <textarea rows={2} maxLength={80} value={noticeText} onChange={(e) => setNoticeText(e.target.value)} placeholder="e.g., Printer down until 2PM!" className="w-full p-3 bg-yellow-50 border border-yellow-200 rounded-xl text-sm font-bold text-yellow-900 outline-none focus:ring-2 focus:ring-yellow-400" />
               <div className="flex items-center justify-between pt-3">
-                <label className="text-xs font-bold text-gray-700 flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={isNoticeActive} onChange={(e) => setIsNoticeActive(e.target.checked)} className="rounded" /> Show on profile</label>
-                <button onClick={handleUpdateNotice} disabled={isSubmitting} className="px-4 py-2 bg-gray-900 text-white text-xs font-bold rounded-lg">Update</button>
+                <label className="text-xs font-bold text-gray-700 flex items-center gap-2 cursor-pointer">
+                  <input type="checkbox" checked={isNoticeActive} onChange={(e) => setIsNoticeActive(e.target.checked)} className="rounded" /> Show on profile
+                </label>
+                <button onClick={handleUpdateNotice} disabled={isSubmitting} className="px-4 py-2 bg-gray-900 text-white text-xs font-bold rounded-lg shrink-0">Update</button>
               </div>
             </div>
 
-            {/* 🚨 ADD / EDIT CATALOG ITEM FORM */}
+            {/* ADD / EDIT CATALOG ITEM FORM */}
             <div className={`p-6 rounded-3xl shadow-sm border transition-colors ${editingItemId ? 'bg-blue-50 border-blue-200 ring-2 ring-blue-100' : 'bg-white border-gray-100'}`}>
               <h2 className="text-lg font-black text-gray-900 mb-4 flex items-center gap-2">
                 {editingItemId ? '✏️ Edit Inventory Item' : '📦 Add Inventory'}
@@ -261,7 +265,7 @@ export default function ShopDashboardPage() {
                 </div>
 
                 <div className="flex items-center gap-2 pt-2 border-t border-gray-100">
-                  <input type="checkbox" id="in_stock" checked={formData.in_stock} onChange={(e) => setFormData({...formData, in_stock: e.target.checked})} className="w-4 h-4 text-blue-600 rounded cursor-pointer" />
+                  <input type="checkbox" id="in_stock" checked={formData.in_stock} onChange={(e) => setFormData({...formData, in_stock: e.target.checked})} className="w-4 h-4 text-blue-600 rounded cursor-pointer shrink-0" />
                   <label htmlFor="in_stock" className="text-sm font-bold text-gray-700 cursor-pointer">Item is In Stock</label>
                 </div>
 
@@ -313,22 +317,22 @@ export default function ShopDashboardPage() {
               
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 {catalog.map((item) => (
-                  <div key={item.id} className={`p-4 rounded-2xl border transition-all group ${editingItemId === item.id ? 'border-blue-400 bg-blue-50/50 ring-1 ring-blue-200' : 'border-gray-100 hover:border-blue-200 shadow-sm hover:shadow-md'}`}>
+                  <div key={item.id} className={`p-5 rounded-2xl border transition-all group ${editingItemId === item.id ? 'border-blue-400 bg-blue-50/50 ring-1 ring-blue-200' : 'border-gray-100 hover:border-blue-200 shadow-sm hover:shadow-md'}`}>
                     <div className="flex justify-between items-start mb-1">
                       <h3 className="font-bold text-gray-900 text-sm pr-2 truncate">{item.name || item.title}</h3>
                       <span className="font-black text-blue-600 text-sm">₹{item.price}</span>
                     </div>
-                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-4">{item.category}</p>
+                    <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{item.category}</p>
                     
-                    <div className="flex items-center justify-between">
-                      <span className={`text-[10px] font-black uppercase px-2 py-0.5 rounded ${item.in_stock ?? item.is_available ?? true ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
+                    {/* 🚨 RESPONSIVE FIX: Action buttons now wrap nicely on small screens */}
+                    <div className="mt-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <span className={`text-[10px] self-start font-black uppercase px-2.5 py-1 rounded-md ${item.in_stock ?? item.is_available ?? true ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
                         {item.in_stock ?? item.is_available ?? true ? 'In Stock' : 'Out of Stock'}
                       </span>
                       
-                      {/* 🚨 RESTORED: Edit & Delete Buttons */}
-                      <div className="flex items-center gap-1">
-                        <button onClick={() => handleEditClick(item)} className="p-1.5 px-3 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-lg font-bold text-xs transition">Edit</button>
-                        <button onClick={() => handleDeleteItem(item.id)} className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition">🗑️</button>
+                      <div className="flex items-center gap-2 w-full sm:w-auto mt-2 sm:mt-0 border-t border-gray-100 sm:border-0 pt-3 sm:pt-0">
+                        <button onClick={() => handleEditClick(item)} className="flex-1 sm:flex-none justify-center px-4 py-2 text-blue-600 bg-blue-50 hover:bg-blue-100 rounded-xl font-bold text-xs transition">Edit</button>
+                        <button onClick={() => handleDeleteItem(item.id)} className="flex-1 sm:flex-none justify-center px-4 py-2 text-red-600 bg-red-50 hover:bg-red-100 rounded-xl font-bold text-xs transition border border-red-100">Delete</button>
                       </div>
                     </div>
                   </div>

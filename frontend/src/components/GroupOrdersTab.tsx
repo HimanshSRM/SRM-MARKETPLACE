@@ -174,7 +174,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
   const isDiscover = !isHost && !hasJoined && order.status === 'open';
   const isExpired = order.status !== 'open';
 
-  // 🚨 FORMAT THE TIMESTAMP
   const formatOrderTime = (dateString: string) => {
     if (!dateString) return '';
     const d = new Date(dateString);
@@ -233,7 +232,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
   if (order.status === 'settled') statusText = 'Settled';
 
   return (
-    // 🚨 FULL COLORS RETURN: Beautiful white cards, vibrant badges, distinct borders
     <div className={`bg-white p-5 rounded-2xl border-y border-r border-l-4 shadow-sm hover:shadow-md transition flex flex-col ${leftBorder} border-y-gray-100 border-r-gray-100`}>
       
       <div className="flex justify-between items-start mb-3">
@@ -248,14 +246,14 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
             </div>
             
             <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-bold text-gray-900 leading-none">
+              {/* 🚨 RESPONSIVE FIX: flex-wrap, gap-y-1, and truncate for long names */}
+              <div className="flex items-center flex-wrap gap-2 gap-y-1">
+                <h3 className="text-lg font-bold text-gray-900 leading-none truncate max-w-[180px] sm:max-w-xs">
                   {order.host_name}'s Order
                 </h3>
-                {/* 🚨 SLEEK HOST BADGE: Tiny, clean, elegant */}
-                {isHost && <span className="text-[10px] text-yellow-700 bg-yellow-100 px-1.5 py-0.5 rounded font-black border border-yellow-200" title="You are the host">👑 Host</span>}
+                {/* 🚨 shrink-0 keeps the badge from getting squished */}
+                {isHost && <span className="shrink-0 text-[10px] text-yellow-700 bg-yellow-100 px-1.5 py-0.5 rounded font-black border border-yellow-200" title="You are the host">👑 Host</span>}
               </div>
-              {/* 🚨 EXACT TIMESTAMP ADDED */}
               <span className="text-[10px] text-gray-400 font-medium mt-1">🕒 {formatOrderTime(order.expires_at)}</span>
             </div>
 

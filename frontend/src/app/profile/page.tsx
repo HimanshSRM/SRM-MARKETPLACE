@@ -3,7 +3,6 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-// 🚨 IMPORTED NEW FUNCTION
 import { getStudentDashboard, deleteMyListing, updateStudentContact } from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -17,7 +16,7 @@ export default function StudentDashboardPage() {
   const [myListings, setMyListings] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   
-  // 🚨 UI States for Settings
+  // UI States for Settings
   const [phoneInput, setPhoneInput] = useState('');
   const [upiInput, setUpiInput] = useState('');
   const [isSavingDefaults, setIsSavingDefaults] = useState(false);
@@ -43,7 +42,7 @@ export default function StudentDashboardPage() {
         setDashboardData(data);
         setMyListings(data.listings || []);
         
-        // 🚨 Pre-fill settings inputs
+        // Pre-fill settings inputs
         setPhoneInput(data.phone || '');
         setUpiInput(data.upi_id || '');
       } catch (error) {
@@ -57,7 +56,7 @@ export default function StudentDashboardPage() {
     loadDashboard();
   }, [profile, router, isAuthLoading]);
 
-  // 🚨 Handle Saving Default Contact Info
+  // Handle Saving Default Contact Info
   const handleSaveDefaults = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSavingDefaults(true);
@@ -108,21 +107,23 @@ export default function StudentDashboardPage() {
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
       <div className="max-w-4xl mx-auto space-y-8">
         
-        {/* Profile Header */}
-        <div className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm flex items-center gap-6">
-          <div className="w-20 h-20 bg-blue-600 text-white rounded-full flex items-center justify-center text-4xl font-black shadow-inner shrink-0">
+        {/* 🚨 THE RESPONSIVE FIX: Profile Header Center Stack */}
+        <div className="bg-white p-6 sm:p-8 rounded-3xl border border-gray-100 shadow-sm flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-4 sm:gap-6 transition-all">
+          <div className="w-20 h-20 bg-blue-600 text-white rounded-full flex items-center justify-center text-4xl font-black shadow-md shrink-0">
             {profile?.email?.charAt(0).toUpperCase()}
           </div>
-          <div>
+          <div className="flex flex-col items-center sm:items-start w-full">
             <h1 className="text-3xl font-black text-gray-900 tracking-tight">My Profile</h1>
-            <p className="text-gray-500 font-medium">{dashboardData?.message || `Logged in as ${profile?.email}`}</p>
-            <span className="inline-block mt-2 px-3 py-1 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-wider rounded-lg border border-green-200">
+            <p className="text-gray-500 font-medium mt-1 break-words w-full max-w-sm sm:max-w-none">
+              {dashboardData?.message || `Logged in as ${profile?.email}`}
+            </p>
+            <span className="inline-block mt-3 px-3 py-1 bg-green-100 text-green-700 text-[10px] font-black uppercase tracking-wider rounded-lg border border-green-200">
               Verified Student
             </span>
           </div>
         </div>
 
-        {/* 🚨 NEW: Default Settings Panel */}
+        {/* Default Settings Panel */}
         <div className="bg-white p-6 sm:p-8 rounded-3xl border border-gray-100 shadow-sm">
           <div className="mb-6">
             <h2 className="text-xl font-bold text-gray-900">Default Chat Settings</h2>
@@ -155,7 +156,7 @@ export default function StudentDashboardPage() {
               <button 
                 type="submit" 
                 disabled={isSavingDefaults}
-                className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 disabled:opacity-50 transition active:scale-95 flex items-center gap-2"
+                className="w-full sm:w-auto px-6 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 disabled:opacity-50 transition active:scale-95 flex items-center justify-center gap-2"
               >
                 {isSavingDefaults && <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>}
                 {isSavingDefaults ? 'Saving...' : 'Save Defaults'}
@@ -166,9 +167,10 @@ export default function StudentDashboardPage() {
 
         {/* My Listings Section */}
         <div>
-          <div className="flex justify-between items-center mb-6 px-1">
+          {/* 🚨 TWEAK: Added flex-wrap here so the button doesn't squish on tiny screens */}
+          <div className="flex flex-wrap gap-4 justify-between items-center mb-6 px-1">
             <h2 className="text-2xl font-bold text-gray-900">My Listings</h2>
-            <Link href="/create-product" className="px-5 py-2.5 bg-gray-900 text-white font-bold text-sm rounded-xl hover:bg-gray-800 transition shadow-sm">
+            <Link href="/create-product" className="px-5 py-2.5 bg-gray-900 text-white font-bold text-sm rounded-xl hover:bg-gray-800 transition shadow-sm whitespace-nowrap">
               + Post New Item
             </Link>
           </div>
@@ -185,7 +187,6 @@ export default function StudentDashboardPage() {
               {myListings.map((listing: any) => (
                 <div key={listing.id} className={`bg-white rounded-2xl border shadow-sm flex flex-col overflow-hidden relative transition-all ${listing.status === 'hidden' ? 'border-orange-400 ring-2 ring-orange-100' : 'border-gray-100'}`}>
                   
-                  {/* Image Placeholder */}
                   <div className="h-40 w-full bg-gray-100 relative group">
                     {listing.image_url ? (
                       <img src={listing.image_url} alt={listing.title} className="w-full h-full object-cover" />
@@ -196,12 +197,10 @@ export default function StudentDashboardPage() {
                     )}
                   </div>
 
-                  {/* Info & Actions */}
                   <div className="p-5 flex flex-col flex-grow">
                     <h3 className="font-bold text-gray-900 text-lg line-clamp-1">{listing.title}</h3>
                     <p className="text-sm font-black text-green-600 mt-1">₹{listing.price}</p>
                     
-                    {/* THE STATUS BADGE */}
                     {listing.status === 'hidden' ? (
                       <div className="mt-3 text-[10px] font-black uppercase tracking-wider text-orange-700 bg-orange-100 px-3 py-1.5 rounded-lg inline-block self-start border border-orange-200">
                         ⚠️ Hidden By Admin

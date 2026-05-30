@@ -29,9 +29,7 @@ export default function SupportPage() {
 
       try {
         setIsLoading(true);
-        // 🚨 CLEANUP: API Wrapper handles auth automatically!
         const inbox = await getInbox();
-        // We only care about support tickets here!
         setTickets(inbox.support || []);
       } catch (error) {
         console.error("Failed to load tickets:", error);
@@ -49,8 +47,6 @@ export default function SupportPage() {
 
     try {
       setIsSubmitting(true);
-
-      // 🚨 CLEANUP: API Wrapper handles auth automatically!
       const response = await createSupportTicket({ subject, message });
       
       setIsModalOpen(false);
@@ -59,7 +55,7 @@ export default function SupportPage() {
     } catch (error: any) {
       alert(error.message || "Failed to submit ticket.");
     } finally {
-      setIsSubmitting(false); // 🚨 Make sure to reset this even on fail!
+      setIsSubmitting(false);
     }
   };
 
@@ -74,7 +70,7 @@ export default function SupportPage() {
 
   if (!profile) {
     return (
-      <div className="min-h-screen flex items-center justify-center font-bold text-red-500">
+      <div className="min-h-screen flex items-center justify-center font-bold text-red-500 bg-gray-50">
         Please log in to access Support.
       </div>
     );
@@ -130,7 +126,7 @@ export default function SupportPage() {
 
       <div className="max-w-4xl mx-auto space-y-6">
         {/* HEADER */}
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-gray-100">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white p-6 rounded-2xl shadow-sm border border-gray-200">
           <div>
             <h1 className="text-2xl font-black text-gray-900">Support Center</h1>
             <p className="text-gray-500 text-sm mt-1">
@@ -139,33 +135,34 @@ export default function SupportPage() {
           </div>
           <button 
             onClick={() => setIsModalOpen(true)}
-            className={`px-6 py-3 text-white font-bold rounded-xl shadow-sm transition whitespace-nowrap ${isBanned ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
+            className={`w-full sm:w-auto px-6 py-3 text-white font-bold rounded-xl shadow-sm transition whitespace-nowrap ${isBanned ? 'bg-red-600 hover:bg-red-700' : 'bg-blue-600 hover:bg-blue-700'}`}
           >
             {isBanned ? 'Appeal Suspension' : '+ Raise New Ticket'}
           </button>
         </div>
 
-        {/* TICKET LIST */}
-        <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
+        {/* TICKET LIST - NOW USING FLOATING CARDS */}
+        <div>
           {tickets.length === 0 ? (
-            <div className="p-12 text-center">
+            <div className="bg-white p-12 text-center rounded-2xl shadow-sm border border-gray-200">
               <div className="w-16 h-16 bg-gray-100 text-gray-400 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">📥</div>
               <h3 className="text-lg font-bold text-gray-900">No Support Tickets</h3>
               <p className="text-gray-500 text-sm mt-1">You don't have any open issues or appeals right now.</p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-50">
+            <div className="space-y-4"> {/* 🚨 Changed from divide-y to space-y-4 for floating cards */}
               {tickets.map((ticket) => (
                 <div 
                   key={ticket.id} 
                   onClick={() => router.push(`/chat/${ticket.chat_room_id || ticket.id}`)}
-                  className="p-4 sm:p-6 hover:bg-gray-50 cursor-pointer transition-colors flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center"
+                  // 🚨 The Floating Card styling applied here:
+                  className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center cursor-pointer transition-shadow hover:shadow-md group"
                 >
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-1">
+                  <div className="flex-1 w-full">
+                    <div className="flex items-center flex-wrap gap-3 mb-2">
                       {/* Ticket Status Badge */}
                       <span className={`px-2.5 py-1 text-[10px] font-black uppercase tracking-widest rounded-md ${
-                        ticket.status === 'resolved' ? 'bg-gray-200 text-gray-600' : 
+                        ticket.status === 'resolved' ? 'bg-gray-100 text-gray-500' : 
                         ticket.subject?.includes('❌') || ticket.subject?.includes('🛑') || ticket.subject?.includes('⚠️') ? 'bg-red-100 text-red-700' : 
                         'bg-blue-100 text-blue-700'
                       }`}>
@@ -179,7 +176,8 @@ export default function SupportPage() {
                     <p className="text-sm text-gray-500 line-clamp-1 mt-1 font-medium">{ticket.last_message || 'Open chat to view details.'}</p>
                   </div>
                   
-                  <button className="text-blue-600 bg-blue-50 px-4 py-2 rounded-xl text-sm font-bold shrink-0 hover:bg-blue-100 transition">
+                  {/* Button stays at the bottom on mobile, pushes to the right on desktop */}
+                  <button className="w-full sm:w-auto text-blue-600 bg-blue-50 px-5 py-2.5 rounded-xl text-sm font-bold shrink-0 group-hover:bg-blue-100 transition">
                     View Thread →
                   </button>
                 </div>
