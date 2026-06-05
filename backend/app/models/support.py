@@ -14,6 +14,7 @@ class TicketCreate(BaseModel):
     description: str = Field(..., max_length=1000)
     reference_id: Optional[str] = None 
     reference_type: Optional[str] = None 
+    reported_uid: Optional[str] = None
 
 # 🚨 FIXED: Matched exactly to what Next.js sends in api.ts
 class AdminTicketReply(BaseModel):

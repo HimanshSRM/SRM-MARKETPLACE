@@ -2,13 +2,73 @@ from fastapi import APIRouter, Depends, Query, HTTPException, Body
 from typing import Optional
 from google.cloud import firestore
 from datetime import datetime, timedelta, timezone
+from pydantic import BaseModel
 
 from app.core.firebase import db
 # 🚨 Swapped 'get_verified_student' for 'get_active_user'
 from app.core.security import get_active_user, get_marketplace_user
-from app.models.listing import ListingCreate, ListingStatus 
+from app.models.listing import ListingCreate, ListingStatus , ListingStatusToggle
 
 router = APIRouter()
+
+
+@router.put("/{listing_id}/toggle-visibility", tags=["Products"])
+async def toggle_listing_visibility(
+    listing_id: str, 
+    payload: ListingStatusToggle, 
+    user: dict = Depends(get_active_user)
+):
+    """
+    Allows a seller to toggle their listing between 'active' and 'hidden'.
+    Strictly prevents modifying 'suspended' or 'sold' items.
+    """
+    try:
+        uid = user.get("uid")
+        listing_ref = db.collection("listings").document(listing_id)
+        listing_doc = listing_ref.get()
+        
+        if not listing_doc.exists:
+            raise HTTPException(status_code=404, detail="Listing not found.")
+            
+        listing_data = listing_doc.to_dict()
+        
+        # Security: Only the owner can toggle this
+        owner_id = listing_data.get("owner_id") or listing_data.get("seller_id")
+        if owner_id != uid:
+            raise HTTPException(status_code=403, detail="Not authorized to edit this listing.")
+            
+        current_status = listing_data.get("status", "active")
+        
+        # STRICT STATE MACHINE: Protect the Admin's quarantine and the 'sold' archive
+        if current_status == "suspended":
+            raise HTTPException(
+                status_code=403, 
+                detail="This listing has been suspended by an Admin and cannot be reactivated."
+            )
+        if current_status == "sold":
+            raise HTTPException(
+                status_code=400, 
+                detail="Sold items cannot be un-archived."
+            )
+            
+        # Determine the new status
+        new_status = "active" if payload.is_active else "hidden"
+        
+        listing_ref.update({
+            "status": new_status,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
+        
+        return {"message": f"Listing is now {new_status}."}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==========================================
+# EXISTING CODE BELOW (Untouched)
+# ==========================================
 
 @router.get("/live", tags=["Products"])
 async def get_live_products(

@@ -111,14 +111,24 @@ async def send_student_otp(
         if not safe_email.endswith("@srmist.edu.in"):
             raise HTTPException(status_code=400, detail="Must be a valid @srmist.edu.in email.")
 
-        # THE UNIQUENESS CHECK
-        existing_users = db.collection("users").where("srm_email", "==", safe_email).limit(1).stream()
-        existing_user = next(existing_users, None)
+        # 🚨 THE UNIQUENESS CHECK: Dual-layer security
         
-        if existing_user and existing_user.id != uid:
+        # Check 1: Is it already claimed as an srm_email?
+        srm_check = db.collection("users").where("srm_email", "==", safe_email).limit(1).stream()
+        existing_srm = next(srm_check, None)
+        if existing_srm and existing_srm.id != uid:
             raise HTTPException(
                 status_code=400, 
                 detail="This SRM email is already registered to another account."
+            )
+
+        # Check 2: Is it already claimed as a primary login email?
+        primary_check = db.collection("users").where("email", "==", safe_email).limit(1).stream()
+        existing_primary = next(primary_check, None)
+        if existing_primary and existing_primary.id != uid:
+            raise HTTPException(
+                status_code=400, 
+                detail="An account already exists with this primary email address. Please log in directly."
             )
 
         otp_code = str(random.randint(100000, 999999))

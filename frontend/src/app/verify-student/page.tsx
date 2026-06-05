@@ -28,8 +28,8 @@ export default function VerifyStudentPage() {
       return;
     }
 
-    // If they are already a verified student, they don't need to be here!
-    if (profile.role === 'student') {
+    // 🚨 THE FIX: If they are already any verified role, they don't need to be here!
+    if (profile.role && ['student', 'shop_verified', 'admin'].includes(profile.role)) {
       router.replace('/');
     }
   }, [profile, isAuthLoading, router]);
@@ -97,8 +97,8 @@ export default function VerifyStudentPage() {
     );
   }
 
-  // 🚨 4. Safe fallback while useEffect redirects
-  if (!profile || profile.role === 'student') return null;
+  // 🚨 4. THE FIX: Safe fallback while useEffect redirects ALL verified roles
+  if (!profile || (profile.role &&['student', 'shop_verified', 'admin'].includes(profile.role))) return null;
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50 px-4">

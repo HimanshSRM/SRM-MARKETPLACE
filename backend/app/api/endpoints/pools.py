@@ -1,12 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import uuid
-from google.cloud.firestore import ArrayUnion, ArrayRemove
-
 from app.core.security import get_current_user
 from app.core.firebase import db , firestore
+from google.cloud.firestore import ArrayUnion, ArrayRemove
+
+
 
 router = APIRouter()
 
@@ -79,6 +80,46 @@ async def get_active_pools(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# 🚨 NEW: The paginated Past Orders route!
+@router.get("/past", tags=["Group Orders"])
+async def get_past_pools(
+    limit: int = Query(15, le=30),
+    cursor: Optional[str] = Query(None),
+    current_user: dict = Depends(get_current_user)
+):
+    """Safely paginates a user's delivered, settled, and cancelled order history."""
+    try:
+        uid = current_user["uid"]
+        
+        # 🚨 THE FIX: Removed "locked" so active orders stop jumping into history!
+        query = db.collection("group_orders")\
+            .where("participant_ids", "array_contains", uid)\
+            .where("status", "in", ["delivered", "settled", "cancelled"])\
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+
+        if cursor:
+            cursor_doc = db.collection("group_orders").document(cursor).get()
+            if cursor_doc.exists:
+                query = query.start_after(cursor_doc)
+
+        docs = query.limit(limit).stream()
+        
+        results = []
+        last_doc_id = None
+        
+        for doc in docs:
+            pool_data = doc.to_dict()
+            pool_data["id"] = doc.id
+            results.append(pool_data)
+            last_doc_id = doc.id
+            
+        return {
+            "data": results,
+            "next_cursor": last_doc_id if len(results) == limit else None
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.post("/")
 async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends(get_current_user)):
@@ -97,7 +138,6 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(), 
             "last_message": "Group order chat created.",
-            # 🚨 FIX: Pass these variables to the chat room so the QR Code and Dashboards work!
             "upi_id": pool_data.upi_id,
             "host_name": user_name,
             "pickup_location": pool_data.pickup_location,
@@ -109,12 +149,12 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
         new_pool = {
             "host_id": current_user["uid"], "host_name": user_name, "app_name": pool_data.app_name,
             "pickup_location": pool_data.pickup_location, "contact_number": pool_data.contact_number,
-            "upi_id": pool_data.upi_id,            # 🚨 Save UPI ID
-            "cart_link": pool_data.cart_link,      # 🚨 Save Master Cart Link
-            "delivery_fee": 0.0,                   # Initialize Fee
+            "upi_id": pool_data.upi_id,            
+            "cart_link": pool_data.cart_link,      
+            "delivery_fee": 0.0,                   
             "status": "open", "expires_at": expires_at.isoformat(), "chat_room_id": chat_room_id,
             "participants": [], 
-            "participant_ids": [], # Flat array for visibility queries
+            "participant_ids": [current_user["uid"]], 
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         db.collection("group_orders").document(pool_id).set(new_pool)
@@ -147,7 +187,7 @@ async def join_group_order(
             "user_name": user_name, 
             "contact_number": payload.contact_number,
             "block": payload.block,
-            "cart_link": payload.cart_link, # 🚨 Save the user's cart link
+            "cart_link": payload.cart_link, 
             "items": [item.model_dump() for item in payload.items], 
             "total_estimated_price": total_price,
             "added_at": datetime.now(timezone.utc).isoformat()
@@ -163,7 +203,6 @@ async def join_group_order(
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         chat_ref.update({"participants": ArrayUnion([current_user["uid"]])})
         
-        # 🚨 DYNAMIC SYSTEM MESSAGE BASED ON HYBRID INPUT
         added_text = ""
         if payload.cart_link:
             added_text = f"Added a Shared Cart Link: {payload.cart_link}"
@@ -178,7 +217,6 @@ async def join_group_order(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER REDIS BACKGROUND NOTIFICATION TO THE HOST
         if pool.get("host_id") and pool["host_id"] != current_user["uid"]:
             await request.app.state.redis.enqueue_job(
                 'process_push_notification',
@@ -193,7 +231,6 @@ async def join_group_order(
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
-# 🚨 NEW: ROUTE FOR A JOINER TO UPDATE THEIR OWN CART
 @router.put("/{pool_id}/participants/me", tags=["Group Orders"])
 async def update_my_cart(
     pool_id: str,
@@ -326,7 +363,7 @@ async def update_pool_status(
         return {"status": payload.status}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
-# 🚨 THE HOST PRICE OVERRIDE ROUTE
+
 @router.put("/{pool_id}/participants/{user_id}/price")
 async def update_participant_price(
     pool_id: str,

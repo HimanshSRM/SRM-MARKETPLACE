@@ -2,10 +2,10 @@
 
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import GuestBlockerModal from '@/components/GuestBlockerModal';
-// 🚨 THE FIX: Swapped onAuthStateChanged for onIdTokenChanged
 import { onIdTokenChanged } from 'firebase/auth';
 import { auth } from '@/lib/firebase'; 
 import { syncUserWithBackend } from '@/lib/api'; 
+import toast from 'react-hot-toast'; // 🚨 NEW: Imported for banned user alerts
 
 export type UserRole = 'guest' | 'student' | 'shop' | 'admin' | null | 'shop_verified' | 'banned';
 
@@ -37,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     console.log("Setting up Firebase listener...");
     
-    // 🚨 THE FIX: onIdTokenChanged automatically fires when a token is refreshed in the background!
+    // onIdTokenChanged automatically fires when a token is refreshed in the background
     const unsubscribe = onIdTokenChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
         console.log("Firebase found a saved user session! Fetching backend data...");
@@ -45,12 +45,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         document.cookie = "client_auth_sync=true; path=/; max-age=86400; SameSite=Strict";
 
         try {
-          // 🚨 THE FIX: No need to grab the token manually! api.ts handles it automatically now.
           // Ask your FastAPI backend for this user's real role
           const data = await syncUserWithBackend();
           
           if (data && data.profile) {
-            // 🚨 READ-ONLY BAN: Let them stay logged in, but lock their role to 'banned'
+            // READ-ONLY BAN: Let them stay logged in, but lock their role to 'banned'
             if (data.profile.role === 'banned' || data.profile.status === 'banned') {
               console.log("User is banned. Entering read-only mode.");
               setProfile({ ...data.profile, role: 'banned' });
@@ -84,17 +83,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => unsubscribe();
   }, []);
 
-  // The Interceptor: Now blocks both 'guest' and 'banned' users
+  // 🚨 THE FIX: Smarter Interceptor Logic
   const withRoleCheck = (action: () => void) => {
     console.log("Interceptor checking role:", profile?.role); 
     
-    if (!profile || profile.role === 'guest' || profile.role === 'banned') {
-      console.log("Blocking action! User is Guest or Banned."); 
-      setShowGuestBlocker(true);
-    } else {
-      console.log("User verified, proceeding!"); 
-      action();
+    if (!profile) return;
+
+    // 1. Check if banned first (Show error toast instead of student verification modal)
+    if (profile.role === 'banned') {
+      console.log("Blocking action! User is Banned."); 
+      toast.error("Your account has been suspended. You cannot perform this action.");
+      return;
     }
+
+    // 2. Check if guest (Show the verification modal)
+    if (profile.role === 'guest') {
+      console.log("Blocking action! User is Guest."); 
+      setShowGuestBlocker(true);
+      return;
+    }
+
+    // 3. User is verified, proceed!
+    console.log("User verified, proceeding!"); 
+    action();
   };
 
   return (

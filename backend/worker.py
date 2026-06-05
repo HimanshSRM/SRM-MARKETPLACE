@@ -11,9 +11,9 @@ if not firebase_admin._apps:
 
 db = firestore.client()
 
-# 🚨 THIS IS THE BACKGROUND JOB
+# 🚨 HIGHLY OPTIMIZED BACKGROUND JOB
 async def process_push_notification(ctx, user_id: str, title: str, body: str, url: str = "/inbox"):
-    """Pulls tokens from Firestore and sends the push via Google FCM."""
+    """Pulls tokens from Firestore and sends the push to ALL devices via Google FCM Multicast."""
     try:
         user_ref = db.collection("users").document(user_id)
         user_doc = user_ref.get()
@@ -27,22 +27,26 @@ async def process_push_notification(ctx, user_id: str, title: str, body: str, ur
         if not tokens:
             return False
 
-        failed_tokens = []
-
-        for token in tokens:
-            try:
-                message = messaging.Message(
-                    notification=messaging.Notification(title=title, body=body),
-                    data={"url": url},
-                    token=token,
-                )
-                messaging.send(message)
-            except Exception as e:
-                failed_tokens.append(token)
+        # 🚨 THE FIX: One API call for all devices simultaneously (Multicast)
+        message = messaging.MulticastMessage(
+            notification=messaging.Notification(title=title, body=body),
+            data={"url": str(url)}, # Must be forced to a string for the FCM data payload
+            tokens=tokens,
+        )
         
-        if failed_tokens:
-            user_ref.update({"fcmTokens": firestore.ArrayRemove(failed_tokens)})
+        # Fire the single batch request to Google FCM
+        response = messaging.send_each_for_multicast(message)
+        
+        # Cleanup invalid tokens (e.g. if the user uninstalled the app on an old device)
+        if response.failure_count > 0:
+            failed_tokens = []
+            for idx, resp in enumerate(response.responses):
+                if not resp.success:
+                    failed_tokens.append(tokens[idx])
             
+            if failed_tokens:
+                user_ref.update({"fcmTokens": firestore.ArrayRemove(failed_tokens)})
+                
         return True
 
     except Exception as e:

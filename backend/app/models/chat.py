@@ -25,7 +25,8 @@ class MessageRead(BaseModel):
 
 class TicketCreate(BaseModel):
     subject: str
-    message: str        
+    message: str  
+    reported_uid: Optional[str] = None      
 
 # --- 2. THE CHAT INITIATION SCHEMA ---
 class ChatInitiate(BaseModel):

@@ -5,8 +5,9 @@ import { useRouter, useParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
 import { collection, query, orderBy, onSnapshot, doc } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase'; 
-import { getChatMessages, sendMessage, acceptBid, resolveSupportTicket, moderateListing, moderateUser, ChatMessage, deleteChatMessages, revertDeal, saveChatContactInfo } from '@/lib/api';
+import { getChatMessages, sendMessage, acceptBid, resolveSupportTicket, moderateListing, moderateUser, ChatMessage, deleteChatMessages, revertDeal, saveChatContactInfo, createSupportTicket } from '@/lib/api';
 import { QRCodeSVG } from 'qrcode.react';
+import ReportModal from '@/components/ReportModal'; 
 
 export default function ChatRoomPage() {
   const router = useRouter();
@@ -20,6 +21,7 @@ export default function ChatRoomPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [roomStatus, setRoomStatus] = useState<'open' | 'locked' | 'delivered' | 'active' | 'sold' | 'resolved'>('active');
   const [isLoading, setIsLoading] = useState(true);
+  const [isNotFound, setIsNotFound] = useState(false); // 🚨 FIX: Added NotFound State
 
   // --- SHOP & METADATA STATES ---
   const [quickReplies, setQuickReplies] = useState<any[]>([]);
@@ -52,13 +54,25 @@ export default function ChatRoomPage() {
   const [isUserModerating, setIsUserModerating] = useState(false);
   const [selectedMessages, setSelectedMessages] = useState<string[]>([]);
   const [isSelectionMode, setIsSelectionMode] = useState(false);
+  
+  const [showMenu, setShowMenu] = useState(false);
+  const [reportingListing, setReportingListing] = useState<{id: string, title: string} | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollToBottom = () => { messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }); };
 
   useEffect(() => { if (!isSelectionMode) scrollToBottom(); }, [messages, pendingMessages, isSelectionMode]);
 
-  // Sync profile defaults to inputs if room details are missing
+  // 🚨 FIX 1: Immediately wipe state when the URL changes to prevent the UI from flashing old data
+  useEffect(() => {
+    setRoomDetails(null);
+    setMessages([]);
+    setPoolDetails(null);
+    setRoomStatus('active');
+    setIsLoading(true);
+    setIsNotFound(false); // Reset NotFound state on route change
+  }, [roomId]);
+
   useEffect(() => {
     if (profile) {
       if (!contactUpiInput && profile.upi_id) setContactUpiInput(profile.upi_id);
@@ -66,7 +80,6 @@ export default function ChatRoomPage() {
     }
   }, [profile, contactUpiInput, contactPhoneInput]);
 
-  // --- LOCAL STORAGE DRAFTS ---
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const savedMsg = localStorage.getItem(`draft_msg_${roomId}`);
@@ -89,7 +102,6 @@ export default function ChatRoomPage() {
   useEffect(() => { localStorage.setItem(`draft_modReason_${roomId}`, modReason); }, [modReason, roomId]);
   useEffect(() => { localStorage.setItem(`draft_userModReason_${roomId}`, userModReason); }, [userModReason, roomId]);
 
-  // --- HELPERS ---
   const formatTime = (dateString?: string) => {
     if (!dateString) return 'Just now'; 
     const d = new Date(dateString);
@@ -97,8 +109,38 @@ export default function ChatRoomPage() {
     return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
-  const renderTextWithLinks = (text: string) => {
+  const renderTextWithLinks = (text: string, senderName: string = 'User') => {
     if (!text) return "...";
+    
+    if (text.startsWith('[CONTACT_CARD]:')) {
+      const phone = text.replace('[CONTACT_CARD]:', '').trim();
+      return (
+        <div className="border border-gray-200 rounded-2xl p-4 bg-white shadow-sm w-64 my-1 text-left">
+          <div className="flex items-center gap-3 mb-3">
+            <div className="w-10 h-10 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center text-lg shadow-inner">
+              {senderName.charAt(0).toUpperCase()}
+            </div>
+            <div>
+              <p className="text-sm font-bold text-gray-900 leading-none">{senderName}</p>
+              <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 mt-1">Shared Contact</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <a href={`https://wa.me/91${phone.replace(/\D/g, '')}`} target="_blank" rel="noopener noreferrer" 
+               className="flex justify-center items-center gap-1.5 bg-[#E8FADF] text-[#0A7B2C] py-2.5 rounded-xl text-xs font-bold hover:bg-[#D4F7C5] transition shadow-sm"
+               onClick={(e) => e.stopPropagation()}>
+              WhatsApp
+            </a>
+            <a href={`tel:+91${phone.replace(/\D/g, '')}`} 
+               className="flex justify-center items-center gap-1.5 bg-gray-50 text-gray-700 py-2.5 rounded-xl text-xs font-bold border border-gray-200 hover:bg-gray-100 transition shadow-sm"
+               onClick={(e) => e.stopPropagation()}>
+              Call
+            </a>
+          </div>
+        </div>
+      );
+    }
+
     const urlRegex = /(https?:\/\/[^\s]+|upi:\/\/[^\s]+)/g;
     const parts = text.split(urlRegex);
 
@@ -114,21 +156,29 @@ export default function ChatRoomPage() {
     });
   };
 
-  // --- DATA FETCHING ---
   const loadChatSecurely = async () => {
     try {
       setIsLoading(true);
       const { room } = await getChatMessages(roomId);
-      setRoomDetails(room);
-    } catch (error) { console.error("Error loading chat:", error); } 
-    finally { setIsLoading(false); }
+      
+      // 🚨 THE FIX: Catch 404s and empty data properly
+      if (!room || Object.keys(room).length === 0) {
+        setIsNotFound(true);
+      } else {
+        setRoomDetails(room);
+      }
+    } catch (error) { 
+      console.warn("Failed to load secure chat data.", error); 
+      setIsNotFound(true);
+    } finally { 
+      setIsLoading(false); 
+    }
   };
 
   useEffect(() => {
-    if (isAuthLoading || !profile?.uid || !auth.currentUser) { setIsLoading(false); return; }
+    if (isAuthLoading || !profile?.uid || !auth.currentUser) return;
     loadChatSecurely(); 
 
-    // Messages Listener
     const messagesRef = collection(db, 'chat_rooms', roomId, 'messages');
     const q = query(messagesRef, orderBy('timestamp', 'asc'));
 
@@ -154,9 +204,10 @@ export default function ChatRoomPage() {
       });
 
       if (hasAcceptedBid) setRoomStatus('sold');
+    }, (error) => {
+      console.warn("Messages stream syncing...", error); // Fail silently
     });
 
-    // Chat Room Listener
     const roomRef = doc(db, 'chat_rooms', roomId);
     const unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
       if (docSnap.exists()) {
@@ -164,30 +215,34 @@ export default function ChatRoomPage() {
         setRoomDetails((prev: any) => (prev ? { ...prev, ...data } : data)); 
 
         if (data.type !== 'group_order') {
-          if (data.status === 'resolved') setRoomStatus('resolved');
-          if (data.status === 'sold') setRoomStatus('sold');
-          else { setRoomStatus('active'); setIsEditingContact(false); } // Revert status
+          if (data.status === 'resolved') {
+             setRoomStatus('resolved');
+             setIsEditingContact(false);
+          } else if (data.status === 'sold') {
+             setRoomStatus('sold');
+          } else { 
+             setRoomStatus('active'); 
+             setIsEditingContact(false); 
+          } 
         }
       }
+    }, (error) => {
+      console.warn("Room stream syncing...", error); // Fail silently
     });
 
     return () => { unsubscribeMessages(); unsubscribeRoom(); };
-  }, [roomId, profile, isAuthLoading]); 
+  }, [roomId, profile?.uid, isAuthLoading]); 
 
-  // Cart Pool Document Listener
   useEffect(() => {
     if (roomDetails?.type === 'group_order' && roomDetails?.pool_id) {
       const poolRef = doc(db, 'group_orders', roomDetails.pool_id);
       const unsubscribePool = onSnapshot(poolRef, (docSnap) => {
-        if (docSnap.exists()) {
-          setPoolDetails(docSnap.data());
-        }
-      });
+        if (docSnap.exists()) setPoolDetails(docSnap.data());
+      }, () => {});
       return () => unsubscribePool();
     }
   }, [roomDetails?.pool_id, roomDetails?.type]);
 
-  // Shop Info Listener
   useEffect(() => {
     if (roomDetails?.shop_id) {
       const shopRef = doc(db, 'shops', roomDetails.shop_id);
@@ -197,12 +252,37 @@ export default function ChatRoomPage() {
           setQuickReplies(shopData.quick_replies || []);
           setShopPhone(shopData.contact_number || null);
         }
-      });
+      }, () => {});
       return () => unsubscribe();
     }
   }, [roomDetails?.shop_id]);
 
-  // --- PERMISSIONS ---
+  // 🚨 UI FIX: Handle Loading, Access Denied, and 404 Not Found cleanly
+  if (isAuthLoading || isLoading) return <div className="h-[100dvh] flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
+  if (!profile || profile.role === 'guest') return <div className="h-[100dvh] flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
+  
+  if (isNotFound) {
+    return (
+      <div className="h-[100dvh] flex flex-col items-center justify-center bg-gray-50 p-6 text-center">
+        <div className="w-16 h-16 bg-red-100 text-red-500 rounded-full flex items-center justify-center mb-4 text-3xl shadow-sm">🗑️</div>
+        <h2 className="text-2xl font-black text-gray-900 mb-2">Chat Not Found</h2>
+        <p className="text-sm font-medium text-gray-500 max-w-xs mx-auto mb-6">This conversation has been deleted, or you do not have permission to view it.</p>
+        <button onClick={() => window.location.href = '/'} className="px-6 py-3 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 transition">Return to Feed</button>
+      </div>
+    );
+  }
+
+  if (!roomDetails) {
+    return (
+      <div className="h-[100dvh] flex flex-col items-center justify-center bg-gray-50 p-6 text-center">
+         <div className="w-16 h-16 bg-gray-200 rounded-full flex items-center justify-center mb-4 text-2xl animate-pulse">⏳</div>
+         <h2 className="text-xl font-black text-gray-800 mb-2">Syncing Data...</h2>
+         <p className="text-sm font-medium text-gray-500 max-w-sm mb-6">Connecting securely to the server. If it takes longer than a few seconds, refresh the page.</p>
+         <button onClick={() => window.location.reload()} className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-xl shadow-sm hover:bg-blue-700 transition">Reload Thread</button>
+      </div>
+    );
+  }
+
   const isBanned = profile?.role === 'banned';
   const isAdminThread = roomDetails?.seller_id === 'ADMIN_TEAM';
   const canChat = !isBanned || isAdminThread;
@@ -216,17 +296,15 @@ export default function ChatRoomPage() {
 
   const acceptedBidMsg = messages.find(m => m.status === 'accepted' || m.bid_status === 'accepted');
   const finalDealPrice = acceptedBidMsg?.bid_amount || 0;
+  
   const amIBuyer = roomDetails?.buyer_id === profile?.uid;
   
-  // Dynamic Phone Number Selector
   const sellerPhone = shopPhone || roomDetails?.seller_phone || roomDetails?.contact_number;
   const buyerPhone = roomDetails?.buyer_phone;
   const otherPersonPhone = amIBuyer ? sellerPhone : buyerPhone; 
 
-  // --- HANDLERS ---
   const handleSendMessage = async (e?: React.FormEvent, overrideText?: string) => {
     if (e) e.preventDefault();
-    if (roomStatus === 'resolved') return; 
     if (!canChat || !profile?.uid) return;
 
     const textToSend = overrideText || newMessage || `Bid: ₹${bidAmount}`;
@@ -254,10 +332,10 @@ export default function ChatRoomPage() {
     try {
       await sendMessage(roomId, profile.uid, textToSend, isBidToSend, bidAmountToSend);
       setPendingMessages(prev => prev.filter(m => m.id !== tempId));
-    } catch (error) {
+    } catch (error: any) {
       setPendingMessages(prev => prev.filter(m => m.id !== tempId));
       if (!overrideText) setNewMessage(textToSend); 
-      alert("Failed to send message.");
+      alert(error.message || "Failed to send message.");
     }
   };
 
@@ -302,7 +380,9 @@ export default function ChatRoomPage() {
 
   const handleUserModerate = async (action: 'warn' | 'ban' | 'restore' | 'nuke') => {
     if (userModReason.length < 10) { alert("Please provide a reason for the audit log."); return; }
-    const targetUid = roomDetails?.buyer_id === 'ADMIN_TEAM' ? roomDetails?.seller_id : roomDetails?.buyer_id;
+    
+    const targetUid = roomDetails?.reported_uid || (roomDetails?.buyer_id === 'ADMIN_TEAM' ? roomDetails?.seller_id : roomDetails?.buyer_id);
+    
     if (!targetUid) { alert("Error: Cannot determine target user."); return; }
     if (action === 'nuke' && !confirm("WARNING: This will permanently delete the user. Proceed?")) return;
     if (action === 'ban' && !confirm("This will lock the user out of their account. Proceed?")) return;
@@ -315,13 +395,28 @@ export default function ChatRoomPage() {
     finally { setIsUserModerating(false); }
   };
 
+  const handleReportUser = async () => {
+    const targetId = amIBuyer ? roomDetails?.seller_id : roomDetails?.buyer_id;
+    const targetName = amIBuyer ? roomDetails?.seller_name : roomDetails?.buyer_name;
+    const displayName = targetName || `this user`;
+    
+    const reason = window.prompt(`Please provide a reason for reporting ${displayName}:`);
+    if (!reason || !reason.trim()) return;
+
+    try {
+      await createSupportTicket({
+        subject: `USER REPORT: ${displayName}`,
+        message: `Reason: ${reason}`,
+        reported_uid: targetId 
+      });
+      alert("User reported successfully. Our Admin team will review this shortly.");
+    } catch (error: any) {
+      alert(error.message || "Failed to submit user report. Please try again.");
+    }
+  };
+
   const handleBack = () => { if (window.history.length > 2) router.back(); else router.push('/'); };
 
-  // --- RENDER LOGIC PRE-CHECKS ---
-  if (isAuthLoading || isLoading) return <div className="h-[100dvh] flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
-  if (!profile || profile.role === 'guest') return <div className="h-[100dvh] flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
-
-  // Group Order Computed Values
   let currentGroupStatus = 'open';
   if (isGroupOrder) {
     if (poolDetails?.status) {
@@ -355,13 +450,18 @@ export default function ChatRoomPage() {
 
   const allDisplayMessages = [...messages, ...pendingMessages];
 
-  // 🚨 UI FIX: h-[100dvh] max-h-[100dvh] entirely locks the layout to the viewport to prevent the input from hiding.
+  const extractCleanName = () => {
+    if (roomDetails?.reported_name) return roomDetails.reported_name;
+    if (roomDetails?.subject) {
+      return roomDetails.subject.replace('🚨 USER REPORT: ', '').replace('USER REPORT: ', '').replace('📩 SUPPORT: ', '');
+    }
+    return 'Reported User';
+  };
+
   return (
     <div className="flex flex-col h-[100dvh] max-h-[100dvh] w-full overflow-hidden bg-gray-50 max-w-2xl mx-auto shadow-2xl relative">
       
-      {/* ========================================= */}
-      {/* 1A. CART POOL UPI MODAL                   */}
-      {/* ========================================= */}
+      {/* 1A. CART POOL UPI MODAL */}
       {showUpiModal && isGroupOrder && upiId && myParticipantData && myFinalAmount > 0 && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl relative flex flex-col items-center text-center animate-fade-in-up">
@@ -399,9 +499,7 @@ export default function ChatRoomPage() {
         </div>
       )}
 
-      {/* ========================================= */}
-      {/* 1B. MARKETPLACE P2P PAYMENT MODAL         */}
-      {/* ========================================= */}
+      {/* 1B. MARKETPLACE P2P PAYMENT MODAL */}
       {showP2PUpiModal && roomStatus === 'sold' && !isGroupOrder && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
             <div className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl relative flex flex-col items-center text-center animate-fade-in-up">
@@ -436,9 +534,7 @@ export default function ChatRoomPage() {
         </div>
       )}
 
-      {/* ========================================= */}
-      {/* 2. CHAT HEADER                          */}
-      {/* ========================================= */}
+      {/* 2. CHAT HEADER */}
       <div className="p-4 border-b flex items-center justify-between bg-white shrink-0 shadow-sm z-10">
         <div className="flex items-center gap-3">
           <button onClick={handleBack} className="p-2 hover:bg-gray-100 rounded-full transition">
@@ -455,7 +551,6 @@ export default function ChatRoomPage() {
         </div>
 
         <div className="flex items-center gap-2">
-          {/* Marketplace: WhatsApp Shop Connect */}
           {!isSelectionMode && shopPhone && !isSupport && !isGroupOrder && (
             <a 
               href={`https://wa.me/${shopPhone.replace(/\D/g, '').startsWith('91') ? shopPhone.replace(/\D/g, '') : '91' + shopPhone.replace(/\D/g, '')}`} 
@@ -467,7 +562,6 @@ export default function ChatRoomPage() {
             </a>
           )}
 
-          {/* Delete Message Selection */}
           {isSelectionMode ? (
             <>
               <button onClick={() => { setIsSelectionMode(false); setSelectedMessages([]); }} className="px-3 py-1.5 text-xs font-bold text-gray-500 hover:text-gray-800 transition">Cancel</button>
@@ -478,9 +572,39 @@ export default function ChatRoomPage() {
             </>
           ) : (
             !isBanned && !isSupport && !isGroupOrder && (
-              <button onClick={() => setIsSelectionMode(true)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition" title="Select messages to delete">
-                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z" /></svg>
-              </button>
+              <div className="relative">
+                <button onClick={() => setShowMenu(!showMenu)} className="p-2 text-gray-400 hover:bg-gray-100 rounded-full transition" title="Options">
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 5v.01M12 12v.01M12 19v.01M12 6a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2zm0 7a1 1 0 110-2 1 1 0 010 2z" /></svg>
+                </button>
+
+                {showMenu && (
+                  <>
+                    <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)}></div>
+                    <div className="absolute right-0 mt-2 w-48 bg-white rounded-2xl shadow-xl border border-gray-100 py-1.5 z-50 animate-fade-in-up">
+                      
+                      <button onClick={() => { setIsSelectionMode(true); setShowMenu(false); }} className="w-full text-left px-4 py-2.5 text-sm font-bold text-gray-700 hover:bg-gray-50 flex items-center gap-2 transition-colors">
+                        <svg className="w-4 h-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                        Delete Messages
+                      </button>
+                      
+                      <div className="h-px bg-gray-100 my-1"></div>
+                      
+                      {amIBuyer && (
+                        <button onClick={() => { setReportingListing({ id: roomDetails.listing_id, title: roomDetails.listing_title }); setShowMenu(false); }} className="w-full text-left px-4 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors">
+                          <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2zm9-13.5V9" /></svg>
+                          Report Product
+                        </button>
+                      )}
+                      
+                      <button onClick={() => { handleReportUser(); setShowMenu(false); }} className="w-full text-left px-4 py-2.5 text-sm font-bold text-red-600 hover:bg-red-50 flex items-center gap-2 transition-colors">
+                        <svg className="w-4 h-4 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                        Report User
+                      </button>
+                      
+                    </div>
+                  </>
+                )}
+              </div>
             )
           )}
 
@@ -492,9 +616,7 @@ export default function ChatRoomPage() {
         </div>
       </div>
 
-      {/* ========================================= */}
-      {/* 3. CART POOL TRACKER DASHBOARD            */}
-      {/* ========================================= */}
+      {/* 3. CART POOL TRACKER DASHBOARD */}
       {isGroupOrder && (
         <div className="bg-white border-b shadow-sm z-10 flex flex-col shrink-0">
           <div className="px-8 py-3 flex justify-between items-center text-xs font-bold">
@@ -539,10 +661,7 @@ export default function ChatRoomPage() {
         </div>
       )}
 
-      {/* ========================================= */}
-      {/* 4. CHAT FEED & MODERATION PANELS          */}
-      {/* ========================================= */}
-      {/* 🚨 THE FIX: min-h-0 prevents flexbox overflowing out of the viewport */}
+      {/* 4. CHAT FEED & MODERATION PANELS */}
       <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-gray-50/50">
         
         {/* Support Ticket Badge */}
@@ -559,6 +678,19 @@ export default function ChatRoomPage() {
               <span className="bg-red-500 text-white text-[10px] font-black px-2 py-1 rounded-md uppercase tracking-widest">Target User Controls</span>
               <span className="text-gray-400 text-xs font-medium">Global Account Actions</span>
             </div>
+            
+            {roomDetails?.reported_uid && (
+               <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-xl flex flex-col gap-1">
+                 <div className="text-sm font-black text-red-500 flex items-center gap-2">
+                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                   Target User: {extractCleanName()}
+                 </div>
+                 <div className="text-[10px] font-bold text-red-400/80 uppercase ml-6">
+                   Securely linked to admin execution panel
+                 </div>
+               </div>
+            )}
+
             <textarea value={userModReason} onChange={(e) => setUserModReason(e.target.value)} placeholder="Type official warning or ban reason here..." className="w-full bg-gray-800 text-white border border-gray-700 rounded-xl p-3 text-sm focus:ring-2 focus:ring-red-500 placeholder-gray-500 mb-3 outline-none" rows={2} />
             <div className="flex flex-wrap gap-2">
               <button onClick={() => handleUserModerate('warn')} disabled={isUserModerating} className="px-4 py-2 bg-yellow-500/10 text-yellow-500 hover:bg-yellow-500 hover:text-white border border-yellow-500/50 rounded-xl text-xs font-bold transition-all">⚠️ Warn Only</button>
@@ -569,8 +701,8 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* Admin Item Moderation Block */}
-        {isAdmin && isSupport && roomDetails?.listing_id && !isDirectUserTicket && (
+        {/* 🚨 REQUIRED FIX: Admin Item Moderation Block */}
+        {isAdmin && isSupport && roomDetails?.listing_id && !isDirectUserTicket && (roomDetails?.reference_type === 'item_report' || (!roomDetails?.reference_type && roomDetails?.listing_id !== 'system_support')) && (
           <div className="mb-6 p-5 bg-red-50 border border-red-200 rounded-3xl shadow-sm">
              <h3 className="text-red-800 font-black flex items-center gap-2 mb-3 text-sm">🛡️ Item Moderation</h3>
              {!modAction ? (
@@ -630,9 +762,11 @@ export default function ChatRoomPage() {
             );
           }
           
+          const isContactCard = msg.text?.startsWith('[CONTACT_CARD]:');
+          
           return (
             <div key={msg.id || index} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'} my-1`}>
-              {!isMe && msg.sender_name && (
+              {!isMe && msg.sender_name && !isContactCard && (
                 <span className="text-[10px] text-gray-400 mb-1 ml-2 font-bold tracking-wide">{msg.sender_name}</span>
               )}
 
@@ -643,19 +777,20 @@ export default function ChatRoomPage() {
 
                 <div 
                   onClick={() => { if (isSelectionMode && canDelete && !isBanned && !msg.isPending) toggleMessageSelection(msg.id); }}
-                  className={`px-5 py-3.5 rounded-3xl shadow-sm transition-all ${
-                    isMe ? 'bg-blue-600 text-white rounded-br-sm' : (isSupport ? 'bg-gray-800 text-white rounded-bl-sm' : 'bg-white text-gray-800 border border-gray-100 rounded-bl-sm')
+                  className={`transition-all ${
+                    isContactCard ? 'bg-transparent' : 
+                    (isMe ? 'px-5 py-3.5 rounded-3xl shadow-sm bg-blue-600 text-white rounded-br-sm' : (isSupport ? 'px-5 py-3.5 rounded-3xl shadow-sm bg-gray-800 text-white rounded-bl-sm' : 'px-5 py-3.5 rounded-3xl shadow-sm bg-white text-gray-800 border border-gray-100 rounded-bl-sm'))
                   } ${isSelectionMode && canDelete && !isBanned && !msg.isPending ? 'cursor-pointer hover:opacity-90 ' + (isSelected ? 'ring-4 ring-red-400' : '') : ''} ${msg.isPending ? 'opacity-70' : ''}`}
                 >
-                  <p className="text-[15px] whitespace-pre-wrap leading-relaxed">
-                    {isGroupOrder && msg.text.includes('http') ? (
+                  <div className="text-[15px] whitespace-pre-wrap leading-relaxed">
+                    {isGroupOrder && msg.text?.includes('http') && !isContactCard ? (
                       <a href={msg.text.match(/https?:\/\/[^\s]+/)?.[0]} target="_blank" rel="noopener noreferrer" className={`underline font-bold transition ${isMe ? 'text-blue-200 hover:text-white' : 'text-blue-500 hover:text-blue-700'}`}>
                         {msg.text}
                       </a>
                     ) : (
-                      renderTextWithLinks(msg.text)
+                      renderTextWithLinks(msg.text, msg.sender_name || (isMe ? 'Me' : 'User'))
                     )}
-                  </p>
+                  </div>
                   
                   {/* Bidding UI (Marketplace) */}
                   {!isSupport && !isGroupOrder && msg.is_bid && msg.bid_amount && (
@@ -688,10 +823,8 @@ export default function ChatRoomPage() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* ========================================= */}
-      {/* 5. INPUT FORM & POST-DEAL DASHBOARD       */}
-      {/* ========================================= */}
-      <div className="p-4 bg-white border-t border-gray-100 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20 shrink-0">
+      {/* 5. INPUT FORM & POST-DEAL DASHBOARD */}
+      <div className="px-4 py-3 bg-white border-t border-gray-100 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20 shrink-0">
         
         {/* Quick Replies for Shop Chats */}
         {quickReplies.length > 0 && !isSelectionMode && roomStatus !== 'resolved' && canChat && roomDetails?.buyer_id === profile?.uid && (
@@ -708,7 +841,7 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* 🚨 THE PERSISTENT DEAL HUB (For Sold Items) */}
+        {/* THE PERSISTENT DEAL HUB (For Sold Items) */}
         {roomStatus === 'sold' && !isGroupOrder && (
           <div className="mb-2 p-4 bg-green-50 rounded-2xl border border-green-200 shadow-sm animate-fade-in-up">
             <div className="flex items-center justify-between mb-4 border-b border-green-200/50 pb-2">
@@ -837,54 +970,104 @@ export default function ChatRoomPage() {
         )}
 
         {/* Input Blocking Logic & The Main Input Form */}
-        {roomStatus === 'resolved' ? (
-          <div className="py-4 px-6 bg-gray-50 border border-gray-200 rounded-2xl text-center">
-            <p className="text-gray-500 font-bold text-sm">🛡️ Ticket resolved. Chat closed.</p>
+        
+        {roomStatus === 'resolved' && (
+          <div className="mb-3 py-3 px-6 bg-blue-50 border border-blue-200 rounded-2xl text-center shadow-inner">
+            <p className="text-blue-700 font-bold text-[11px] uppercase tracking-wider flex justify-center items-center gap-1">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              Ticket is resolved. Sending a message will reopen it.
+            </p>
           </div>
-        ) : !canChat ? (
+        )}
+
+        {!canChat ? (
           <div className="py-4 px-6 bg-red-50 border border-red-200 rounded-2xl text-center">
             <p className="text-red-600 font-bold text-sm">🚫 Your account is suspended. You can only reply in official Admin Support threads.</p>
           </div>
         ) : (
-          <form onSubmit={(e) => handleSendMessage(e)} className="space-y-3">
+          <form onSubmit={(e) => handleSendMessage(e)} className="flex flex-col">
              
-             {/* Upper Actions Row (Bidding Checkbox & Share Contact Card) */}
-             <div className="flex items-center justify-between px-2">
-               {/* Bidding Checkbox */}
+             {/* Upper Actions Row: Compact & Balanced */}
+             <div className="flex items-center justify-between px-1 mb-2 mt-0">
+               
+               {/* Custom Minimalist Checkbox */}
                {!isSupport && !isGroupOrder && roomStatus !== 'sold' && ( 
-                 <div className="flex items-center gap-2">
-                    <input type="checkbox" id="bid" checked={isBidding} onChange={(e) => setIsBidding(e.target.checked)} disabled={isSelectionMode} className="w-4 h-4 rounded text-blue-600 border-gray-300 focus:ring-blue-500 cursor-pointer" />
-                    <label htmlFor="bid" className="text-xs font-bold text-gray-500 hover:text-gray-700 transition cursor-pointer select-none tracking-wide">MAKE OFFICIAL BID</label>
-                 </div>
+                 <label className="flex items-center gap-2 cursor-pointer group">
+                   <div className="relative flex items-center justify-center">
+                     <input 
+                       type="checkbox" 
+                       checked={isBidding} 
+                       onChange={(e) => setIsBidding(e.target.checked)} 
+                       disabled={isSelectionMode} 
+                       className="peer appearance-none w-4 h-4 border-2 border-gray-300 rounded bg-white checked:bg-blue-600 checked:border-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500/30 transition-all disabled:opacity-50 cursor-pointer"
+                     />
+                     <svg className="absolute w-3 h-3 text-white opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                     </svg>
+                   </div>
+                   <span className="text-[11px] font-bold text-gray-500 group-hover:text-gray-800 transition select-none uppercase tracking-wide">
+                     Make Official Bid
+                   </span>
+                 </label>
                )}
 
-               {/* 🚨 NEW: Share Contact Card for Seller (Pre-deal off-app option) */}
-               {!isSupport && !isGroupOrder && roomStatus !== 'sold' && !amIBuyer && profile?.phone && (
+               {/* Quiet Ghost Button for Contact */}
+               {!isSupport && !isGroupOrder && roomStatus !== 'sold' && profile?.phone && (
                  <button 
                    type="button" 
-                   onClick={() => handleSendMessage(undefined, `You can reach me directly on WhatsApp: ${profile.phone}`)} 
-                   className="text-[10px] font-bold text-gray-500 hover:text-blue-600 transition flex items-center gap-1 bg-gray-100 hover:bg-blue-50 px-2 py-1 rounded-lg"
+                   onClick={() => handleSendMessage(undefined, `[CONTACT_CARD]:${profile.phone}`)} 
+                   className="text-[10px] font-bold text-gray-500 hover:text-blue-600 transition flex items-center gap-1 bg-gray-100 hover:bg-blue-50 px-2.5 py-1.5 rounded-lg border border-gray-200"
                  >
-                   🪪 Share My Contact
+                   🪪 Share My Contact Card
                  </button>
                )}
              </div>
              
              {/* Input Area */}
-             <div className="flex gap-2">
+             <div className="flex gap-2 items-center">
                 {isBidding && !isSupport && !isGroupOrder && roomStatus !== 'sold' && (
-                  <input type="number" placeholder="₹" value={bidAmount} onChange={(e) => setBidAmount(e.target.value)} disabled={isSelectionMode} className="w-24 p-3.5 bg-gray-50 border border-gray-200 rounded-2xl font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:opacity-50 transition-all shadow-inner" />
+                  <div className="relative flex items-center shrink-0">
+                    <span className="absolute left-3.5 text-gray-500 font-bold pointer-events-none select-none">₹</span>
+                    <input 
+                      type="number" 
+                      placeholder="0" 
+                      value={bidAmount} 
+                      onChange={(e) => setBidAmount(e.target.value)} 
+                      disabled={isSelectionMode} 
+                      className="w-20 sm:w-24 pl-8 pr-3 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:opacity-50 transition-all shadow-inner" 
+                    />
+                  </div>
                 )}
                 
-                <input type="text" placeholder={isSelectionMode ? "Exit selection mode to type..." : (isBidding ? "Add a note to your bid..." : "Message...")} value={newMessage} onChange={(e) => setNewMessage(e.target.value)} disabled={isSelectionMode} className="flex-1 p-3.5 bg-gray-50 border border-gray-200 rounded-2xl font-medium outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:opacity-50 transition-all shadow-inner text-[15px]" />
+                <input 
+                  type="text" 
+                  placeholder={isSelectionMode ? "Exit selection mode to type..." : (isBidding ? "Add a note to your bid..." : "Message...")} 
+                  value={newMessage} 
+                  onChange={(e) => setNewMessage(e.target.value)} 
+                  disabled={isSelectionMode} 
+                  className="flex-1 min-w-0 px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl font-medium outline-none focus:bg-white focus:ring-2 focus:ring-blue-500 disabled:opacity-50 transition-all shadow-inner text-sm sm:text-[15px]" 
+                />
                 
-                <button type="submit" disabled={isSelectionMode || (!newMessage.trim() && (!bidAmount && isBidding))} className="p-3.5 bg-blue-600 text-white font-bold rounded-2xl px-6 disabled:opacity-50 hover:bg-blue-700 active:scale-95 transition-all shadow-sm">
+                <button 
+                  type="submit" 
+                  disabled={isSelectionMode || (!newMessage.trim() && (!bidAmount && isBidding))} 
+                  className="py-3.5 bg-blue-600 text-white font-bold rounded-2xl px-5 sm:px-6 disabled:opacity-50 hover:bg-blue-700 active:scale-95 transition-all shadow-sm shrink-0"
+                >
                   Send
                 </button>
              </div>
           </form>
         )}
       </div>
+
+      {/* 🚨 THE REPORT MODAL */}
+      {reportingListing && (
+        <ReportModal
+          listingId={reportingListing.id}
+          listingTitle={reportingListing.title}
+          onClose={() => setReportingListing(null)}
+        />
+      )}
     </div>
   );
 }

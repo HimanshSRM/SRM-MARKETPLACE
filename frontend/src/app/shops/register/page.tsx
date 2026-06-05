@@ -18,11 +18,10 @@ export default function ShopRegistrationPage() {
   const [choiceMade, setChoiceMade] = useState(false);
   const [isOverwriting, setIsOverwriting] = useState(false);
 
-  // 🚨 OPTIMIZED: Matched exactly to the new backend schema
   const [formData, setFormData] = useState({
     shop_name: '',       
-    tagline: '',         // Replaced 'description'
-    block: '',           // Replaced 'location'
+    tagline: '',         
+    block: '',           
     contact_number: '',  
   });
 
@@ -78,7 +77,17 @@ export default function ShopRegistrationPage() {
     setError(null);
 
     try {
-      await createShopProfile(formData, isOverwriting);
+      // 🚨 THE DEFINITIVE 422 FIX:
+      // Translate the React state to perfectly match the Python Pydantic Model.
+      const apiPayload = {
+        shop_name: formData.shop_name,
+        description: formData.tagline,           // Satisfies "description: Field required"
+        location: formData.block,                // Satisfies "location: Field required"
+        contact_number: formData.contact_number,
+        contact_email: profile?.email || ""      // Satisfies "contact_email: Field required"
+      };
+
+      await createShopProfile(apiPayload, isOverwriting);
       
       if (profile) {
          const newRole = profile.role === 'shop_verified' ? 'guest' : profile.role;
@@ -112,7 +121,7 @@ export default function ShopRegistrationPage() {
       }
 
       alert("Welcome back! Your shop has been restored and is pending admin approval.");
-      router.push('/shops/dashboard'); 
+      router.push('/shops'); 
       
     } catch (err: any) {
       console.error("Error restoring shop:", err);

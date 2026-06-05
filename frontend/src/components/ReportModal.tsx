@@ -25,7 +25,8 @@ export default function ReportModal({ listingId, listingTitle, shopId, onClose }
       
       // 🚨 THE SMART LOGIC: Choose the right API
       if (shopId) {
-        await reportShopItem(shopId, listingId, reason, details);
+        // ✅ THE FIX: reason and details wrapped in curly braces as a single payload object
+        await reportShopItem(shopId, listingId, { reason, details });
       } else {
         await reportListing(listingId, reason, details);
       }

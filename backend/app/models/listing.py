@@ -7,6 +7,7 @@ from enum import Enum
 class ListingType(str, Enum):
     PRODUCT = "product"
     SERVICE = "service"
+    REQUEST = "request"
 
 class ListingStatus(str, Enum):
     ACTIVE = "active"
@@ -17,9 +18,10 @@ class ListingStatus(str, Enum):
 class ListingCreate(BaseModel):
     title: str = Field(..., min_length=5, max_length=100, description="Title of the ad")
     description: str = Field(..., min_length=10, max_length=1000)
-    price: float = Field(..., ge=0.0, description="Price must be 0 or greater")
+    price: float = Field(..., description="Acts as price for products/services, or Max Budget for requests")
     type: ListingType
     category: str = Field(..., example="electronics, books, tutoring, UI/UX")
+    condition: Optional[str] = None 
     images: Optional[List[str]] = Field(default=[], max_length=5, description="Max 5 image URLs allowed")
 
 # 3. The Database Model (What it looks like once we add our backend data)
@@ -28,3 +30,8 @@ class ListingResponse(ListingCreate):
     owner_id: str  # The Firebase UID of the student who posted it
     status: ListingStatus = ListingStatus.ACTIVE
     created_at: datetime
+
+
+# 🚨 THE NEW TOGGLE ROUTE: Built exactly to your spec without touching the rest
+class ListingStatusToggle(BaseModel):
+    is_active: bool

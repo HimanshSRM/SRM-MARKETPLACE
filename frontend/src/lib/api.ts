@@ -220,6 +220,46 @@ export async function createProduct(productData: CreateProductPayload) {
 }
 
 // ==========================================
+// REQUESTS (ISO) API
+// ==========================================
+
+export async function fetchLiveRequests(category: string = '', cursor: string = '') {
+  const params = new URLSearchParams();
+  if (category) params.append('category', category);
+  if (cursor) params.append('cursor', cursor);
+
+  const queryString = params.toString() ? `?${params.toString()}` : '';
+  
+  const response = await authenticatedFetch(`${API_URL}/api/requests/live${queryString}`, { 
+    method: 'GET',
+    cache: 'no-store' 
+  });
+  
+  if (!response.ok) throw new Error('Failed to fetch requests feed');
+  return response.json();
+}
+
+export async function createRequest(requestData: any) {
+  const response = await authenticatedFetch(`${API_URL}/api/requests/create`, {
+    method: 'POST',
+    body: JSON.stringify({ ...requestData, type: 'request' }),
+  });
+  
+  if (!response.ok) {
+    const data = await response.json().catch(() => null);
+    
+    // 🚨 THE TRANSLATOR: Unpacks FastAPI array errors into readable text
+    let errorMsg = data?.detail;
+    if (Array.isArray(data?.detail)) {
+      errorMsg = data.detail.map((e: any) => `${e.loc[e.loc.length-1]}: ${e.msg}`).join(', ');
+    }
+    
+    throw new Error(errorMsg || 'Failed to post request');
+  }
+  return response.json();
+}
+
+// ==========================================
 // CHAT & BIDDING API
 // ==========================================
 
@@ -260,7 +300,9 @@ export async function initiateChat(
     body: JSON.stringify({ 
       listing_id: listingId,            
       owner_id: ownerId,            
-      initial_message: initialMessage 
+      initial_message: initialMessage,
+      // 🚨 THE FIREWALL FIX: Explicitly tell the backend NOT to return support tickets
+      is_ticket: false 
     }), 
   });
 
@@ -425,14 +467,14 @@ export async function getLiveShops(): Promise<Shop[]> {
 
 // 2. Get a Specific Shop's Catalog (Public)
 export async function getShopCatalog(shopId: string): Promise<CatalogItem[]> {
-  const response = await authenticatedFetch(`${API_URL}/api/shops/${shopId}/catalog`, {
+  const response = await authenticatedFetch(`${API_URL}/api/shops/${shopId}`, {
     method: 'GET',
     cache: 'no-store',
   });
 
   if (!response.ok) throw new Error('Failed to load catalog');
   const data = await response.json();
-  return Array.isArray(data) ? data : data.data || [];
+  return data.data?.catalog || [];
 }
 
 // 3. Create Shop Profile
@@ -443,7 +485,14 @@ export async function createShopProfile(shopData: any, overwrite: boolean = fals
   });
 
   const data = await response.json();
-  if (!response.ok) throw new Error(data.detail || "Failed to create shop");
+  
+  if (!response.ok) {
+    let errorMsg = data.detail;
+    if (Array.isArray(data.detail)) {
+      errorMsg = data.detail.map((e: any) => `${e.loc[e.loc.length-1]}: ${e.msg}`).join(', ');
+    }
+    throw new Error(errorMsg || "Failed to create shop");
+  }
   return data; 
 }
 
@@ -469,7 +518,11 @@ export async function restoreShopProfile() {
 
   if (!response.ok) {
     const error = await response.json();
-    throw new Error(error.detail || 'Failed to restore shop');
+    let errorMsg = error.detail;
+    if (Array.isArray(error.detail)) {
+      errorMsg = error.detail.map((e: any) => `${e.loc[e.loc.length-1]}: ${e.msg}`).join(', ');
+    }
+    throw new Error(errorMsg || 'Failed to restore shop');
   }
   return await response.json();
 }
@@ -518,8 +571,7 @@ export async function deleteCatalogItem(itemId: string): Promise<void> {
   }
 }
 
-// --- 🚨 NEW ADVANCED SHOP FEATURES ---
-
+// --- ADVANCED SHOP FEATURES ---
 export async function updateShopStatus(isOpen: boolean) {
   const response = await authenticatedFetch(`${API_URL}/api/shops/status`, {
     method: 'PUT',
@@ -558,7 +610,6 @@ export async function triggerFlashDeal(dealData: { item_name: string, original_p
   }
   return await response.json();
 }
-
 
 // ==========================================
 // ADMIN API
@@ -633,6 +684,20 @@ export async function moderateUser(
   return await response.json();
 }
 
+export async function getAdminListings(limit: number = 20, cursor: string = '', status: string = '', reportedOnly: boolean = false) {
+  const params = new URLSearchParams({ limit: limit.toString() });
+  if (cursor) params.append('cursor', cursor);
+  if (status) params.append('status', status);
+  if (reportedOnly) params.append('reported_only', 'true');
+
+  const response = await authenticatedFetch(`${API_URL}/api/admin/listings?${params.toString()}`, { method: 'GET' });
+  
+  if (!response.ok) {
+    const errData = await response.json().catch(() => null);
+    throw new Error(errData?.detail || 'Failed to fetch admin listings.');
+  }
+  return await response.json();
+}
 
 // ==========================================
 // TRUST & SAFETY API
@@ -665,46 +730,84 @@ export async function moderateListing(
   return await response.json();
 }
 
-export async function reportShopItem(shopId: string, itemId: string, reason: string, details: string = "") {
+export async function reportShopItem(shopId: string, itemId: string, payload: { reason: string; details?: string }) {
   const response = await authenticatedFetch(`${API_URL}/api/shops/${shopId}/catalog/${itemId}/report`, {
-    method: 'POST', body: JSON.stringify({ reason, details }),
+    method: 'POST',
+    body: JSON.stringify(payload)
   });
+
   if (!response.ok) {
-    const errorData = await response.json().catch(() => null);
-    throw new Error(errorData?.detail || 'Failed to submit shop report');
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to report shop item");
   }
   return await response.json();
 }
 
-
 // ==========================================
-// SUPPORT TICKETS 
+// 🚨 THE FIX: PAGINATED SUPPORT TICKETS 
 // ==========================================
 
-export async function createSupportTicket(payload: { subject: string, message?: string, description?: string }) {
+export async function createSupportTicket(payload: { subject: string, message?: string, description?: string , reported_uid?: string}) {
   const finalMessage = payload.message || payload.description || "No message provided.";
-  const response = await authenticatedFetch(`${API_URL}/api/chat/support/ticket`, {
-    method: 'POST', body: JSON.stringify({ subject: payload.subject, message: finalMessage })
+
+  if (payload.reported_uid) {
+    const response = await authenticatedFetch(`${API_URL}/api/chat/support/ticket`, {
+      method: 'POST', 
+      body: JSON.stringify({ 
+        subject: payload.subject, 
+        message: finalMessage, 
+        reported_uid: payload.reported_uid 
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      throw new Error(error.detail || 'Failed to submit report');
+    }
+    return await response.json();
+  }
+
+  const response = await authenticatedFetch(`${API_URL}/api/support/create`, {
+    method: 'POST', 
+    body: JSON.stringify({ 
+      subject: payload.subject, 
+      description: finalMessage, 
+      reference_id: "system_support", 
+      reference_type: "general" 
+    })
   });
+  
   if (!response.ok) {
-    const error = await response.json();
+    const error = await response.json().catch(() => ({}));
     throw new Error(error.detail || 'Failed to create support ticket');
   }
   return await response.json();
 }
 
-export async function getMyTickets() {
-  const response = await authenticatedFetch(`${API_URL}/api/support/my-tickets`, { method: 'GET' });
+// 🚨 THE FIX: Added Cursor parameter
+export async function getMyTickets(cursor: string = '') {
+  const params = new URLSearchParams();
+  if (cursor) params.append('cursor', cursor);
+  const queryString = params.toString() ? `?${params.toString()}` : '';
+
+  const response = await authenticatedFetch(`${API_URL}/api/support/my-tickets${queryString}`, { method: 'GET' });
   if (!response.ok) throw new Error('Failed to load tickets');
-  const data = await response.json();
-  return Array.isArray(data) ? data : data.data || [];
+  
+  // Return raw object so `res.next_cursor` is accessible in the UI
+  return await response.json();
 }
 
-export async function getAllSupportTickets() {
-  const response = await authenticatedFetch(`${API_URL}/api/admin/tickets`, { method: 'GET' });
+// 🚨 THE FIX: Added Cursor parameter
+export async function getAllSupportTickets(cursor: string = '') {
+  const params = new URLSearchParams();
+  if (cursor) params.append('cursor', cursor);
+  const queryString = params.toString() ? `?${params.toString()}` : '';
+
+  const response = await authenticatedFetch(`${API_URL}/api/admin/tickets${queryString}`, { method: 'GET' });
   if (!response.ok) throw new Error("Failed to fetch support tickets");
-  const result = await response.json();
-  return Array.isArray(result) ? result : result.data || []; 
+  
+  // Return raw object so `res.next_cursor` is accessible in the UI
+  return await response.json(); 
 }
 
 export async function replyToTicket(ticketId: string, status: string, admin_response: string) {
@@ -720,7 +823,6 @@ export async function resolveSupportTicket(ticketId: string | number) {
   if (!response.ok) throw new Error('Failed to resolve ticket');
   return await response.json();
 }
-
 
 // ==========================================
 // DASHBOARDS & UTILS
@@ -738,6 +840,19 @@ export async function getStudentDashboard() {
 export async function getGuestDashboard() {
   const response = await authenticatedFetch(`${API_URL}/api/dashboard/guest`, { method: 'GET' });
   if (!response.ok) throw new Error('Failed to fetch guest dashboard');
+  return await response.json();
+}
+
+export async function toggleListingVisibility(listingId: string, isActive: boolean) {
+  const response = await authenticatedFetch(`${API_URL}/api/products/${listingId}/toggle-visibility`, {
+    method: 'PUT',
+    body: JSON.stringify({ is_active: isActive })
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => null);
+    throw new Error(errorData?.detail || "Failed to toggle visibility");
+  }
   return await response.json();
 }
 
@@ -789,8 +904,6 @@ export async function updateStudentContact(payload: { phone?: string, upi_id?: s
   return await response.json();
 }
 
-
-
 // ==========================================
 // GROUP ORDERS (CART POOLING) APIs
 // ==========================================
@@ -802,6 +915,20 @@ export const getActiveGroupOrders = async () => {
     throw new Error(error.detail || "Failed to fetch active group orders");
   }
   return res.json(); 
+};
+
+// 🚨 THE FIX: Brand New Paginated Historical Pools Route
+export const getPastPools = async (cursor: string = '') => {
+  const params = new URLSearchParams();
+  if (cursor) params.append('cursor', cursor);
+  const queryString = params.toString() ? `?${params.toString()}` : '';
+
+  const res = await authenticatedFetch(`${API_URL}/api/pools/past${queryString}`, { method: 'GET' });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to fetch past pools");
+  }
+  return res.json();
 };
 
 export const createGroupOrder = async (orderData: { 

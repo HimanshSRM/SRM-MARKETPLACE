@@ -31,14 +31,13 @@ export default function GuestDashboardPage() {
 
     // 3. If they are a verified shop, send them to the shop dashboard
     if (profile.role === 'shop' || profile.role === 'shop_verified') {
-      router.push('/shop');
+      router.push('/shops/dashboard'); // Or '/shop' depending on your routes
       return;
     }
 
     // 4. Fetch Guest Data
     const loadDashboard = async () => {
       try {
-        // 🚨 CLEANUP: API Wrapper handles auth automatically!
         const data = await getGuestDashboard();
         setDashboardData(data);
       } catch (error) {
@@ -51,7 +50,7 @@ export default function GuestDashboardPage() {
     if (profile.role === 'guest') {
       loadDashboard();
     }
-  }, [profile, router, isAuthLoading]); // 🚨 Added isAuthLoading here
+  }, [profile, router, isAuthLoading]);
 
   if (profile === undefined || isLoading) {
     return (
@@ -106,8 +105,11 @@ export default function GuestDashboardPage() {
                 <h3 className="font-bold text-gray-900">Are you a Local Business?</h3>
                 <p className="text-sm text-gray-500 mt-1">If you own a shop or restaurant near campus and want to sell to students, you can apply for a Verified Shop account.</p>
                 
-                {/* 🚨 This button will eventually link to your Shop Application Form */}
-                <button className="mt-4 px-5 py-2.5 bg-gray-900 text-white font-bold text-sm rounded-xl hover:bg-gray-800 transition shadow-sm">
+                {/* 🚨 THE FIX: Navigate cleanly to the application form */}
+                <button 
+                  onClick={() => router.push('/shops/register')} 
+                  className="mt-4 px-5 py-2.5 bg-gray-900 text-white font-bold text-sm rounded-xl hover:bg-gray-800 transition shadow-sm"
+                >
                   Apply for a Shop Account →
                 </button>
               </div>

@@ -1,59 +1,110 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from typing import Optional
 from google.cloud import firestore
 
 from app.core.firebase import db
-from app.core.security import get_current_user, get_admin_user, get_active_user
+from app.core.security import get_current_user, get_admin_user
 from app.models.support import TicketStatus, TicketCreate, AdminTicketReply, WarnUserRequest
 
 router = APIRouter()
 
 # ==========================================
-# 🙋‍♂️ USER ROUTES (Anyone logged in)
+# 🙋‍♂️ USER ROUTES (General Support & Ban Appeals)
 # ==========================================
 
 @router.post("/create", tags=["Support & Admin"])
 async def create_support_ticket(
     ticket: TicketCreate, 
-    user: dict = Depends(get_current_user) # 🟢 Changed to base user to allow the custom bouncer
+    user: dict = Depends(get_current_user)
 ):
     try:
         uid = user.get("uid")
         role = user.get("role", "guest")
         status = user.get("status", "active")
         
-        # 🚨 THE "SINGLE APPEAL TICKET" BOUNCER
         is_banned = (role == "banned" or status == "banned")
-        if is_banned:
-            # Check if they already have an open ticket in the chat_rooms collection
-            existing_tickets = db.collection("chat_rooms")\
-                .where("buyer_id", "==", uid)\
-                .where("seller_id", "==", "ADMIN_TEAM")\
-                .where("status", "==", "open")\
-                .limit(1).get()
-                
-            if existing_tickets:
-                raise HTTPException(
-                    status_code=403, 
-                    detail="You already have an open appeal. Please reply in your existing active ticket in your inbox."
-                )
 
-        # 1. Create the Chat Room First
+        # 🚨 1. TICKET-FIRST QUERY
+        # We query the TICKETS collection. If you deleted it in the admin panel, 
+        # this safely returns empty and generates a new one.
+        existing_tickets = db.collection("tickets")\
+            .where("owner_id", "==", uid)\
+            .where("reference_type", "==", "general")\
+            .limit(1).stream()
+            
+        existing_room_id = None
+        existing_ticket_id = None
+        
+        for t in existing_tickets:
+            t_data = t.to_dict()
+            
+            # Banned user restriction
+            if is_banned and t_data.get("status") in ["open", "action_required"]:
+                raise HTTPException(status_code=403, detail="You already have an open appeal. Please reply in your existing active ticket.")
+                
+            existing_room_id = t_data.get("chat_room_id")
+            existing_ticket_id = t.id
+            break
+
+        # 🚨 2. VALIDATE CHAT ROOM INTEGRITY
+        # If the ticket exists but the chat room was manually deleted, discard it and start fresh.
+        if existing_room_id:
+            room_doc = db.collection("chat_rooms").document(existing_room_id).get()
+            if not room_doc.exists:
+                existing_room_id = None
+                existing_ticket_id = None
+
+        # 3. ESCALATE & APPEND (Only runs if BOTH the ticket and room perfectly exist)
+        if existing_room_id and existing_ticket_id:
+            room_ref = db.collection("chat_rooms").document(existing_room_id)
+            user_name = user.get("name", user.get("email", "User").split("@")[0])
+
+            msg_text = f"🚨 NEW TICKET ADDED:\n\nSubject: {ticket.subject}\n\n{ticket.description}"
+
+            room_ref.collection("messages").add({
+                "sender_id": uid,
+                "sender_name": user_name,
+                "text": msg_text,
+                "is_bid": False,
+                "created_at": firestore.SERVER_TIMESTAMP
+            })
+
+            room_ref.update({
+                "status": "open",
+                "subject": ticket.subject,
+                "last_message": ticket.description,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            })
+
+            ticket_ref = db.collection("tickets").document(existing_ticket_id)
+            ticket_ref.update({
+                "status": TicketStatus.OPEN.value,
+                "subject": ticket.subject,
+                "updated_at": firestore.SERVER_TIMESTAMP
+            })
+                
+            return {"message": "Ticket appended.", "ticket_id": existing_ticket_id, "chat_room_id": existing_room_id}
+
+        # ==========================================
+        # 4. CREATE BRAND NEW TICKET 
+        # (Executes instantly if the old ticket or room was deleted)
+        # ==========================================
         chat_ref = db.collection("chat_rooms").document()
         chat_room_id = chat_ref.id
         
         chat_ref.set({
             "id": chat_room_id,
-            "listing_id": ticket.reference_id or "system_support",
+            "listing_id": "system_support",
+            "reference_type": "general",
             "buyer_id": uid,
             "seller_id": "ADMIN_TEAM",
             "subject": ticket.subject,
             "last_message": ticket.description,
             "updated_at": firestore.SERVER_TIMESTAMP,
             "is_ticket": True,
-            "status": "open" # 🚨 Ensure status is explicitly tracked here!
+            "status": "open" 
         })
         
-        # Add the user's description as the first message
         chat_ref.collection("messages").add({
             "sender_id": uid,
             "text": ticket.description,
@@ -61,7 +112,6 @@ async def create_support_ticket(
             "created_at": firestore.SERVER_TIMESTAMP 
         })
 
-        # 2. Create the Official Ticket Record
         ticket_ref = db.collection("tickets").document()
         ticket_ref.set({
             "id": ticket_ref.id,
@@ -69,38 +119,54 @@ async def create_support_ticket(
             "user_email": user.get("email"), 
             "subject": ticket.subject,
             "description": ticket.description, 
-            "reference_id": ticket.reference_id,
-            "reference_type": ticket.reference_type,
+            "reference_id": "system_support",
+            "reference_type": "general", # 🚨 Ensures Admin Panel handles it properly
             "status": TicketStatus.OPEN.value,
             "chat_room_id": chat_room_id,
             "created_at": firestore.SERVER_TIMESTAMP
         })
 
         return {"message": "Support ticket created successfully!", "ticket_id": ticket_ref.id, "chat_room_id": chat_room_id}
+        
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
+# 🚨 THE FIX: Fully paginated User Tickets Route
 @router.get("/my-tickets", tags=["Support & Admin"])
-async def get_my_tickets(user: dict = Depends(get_current_user)): 
-    # 🟢 READ ACTION: Keep get_current_user so Banned users can read their ban appeal ticket
+async def get_my_tickets(
+    limit: int = Query(15, le=50),
+    cursor: Optional[str] = Query(None),
+    user: dict = Depends(get_current_user)
+): 
     try:
         uid = user.get("uid")
-        tickets_query = db.collection("tickets").where("owner_id", "==", uid).stream()
+        query = db.collection("tickets")\
+            .where("owner_id", "==", uid)\
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
         
+        if cursor:
+            cursor_doc = db.collection("tickets").document(cursor).get()
+            if cursor_doc.exists:
+                query = query.start_after(cursor_doc)
+                
+        tickets_stream = query.limit(limit).stream()
         results = []
-        for doc in tickets_query:
+        last_doc_id = None
+        
+        for doc in tickets_stream:
             data = doc.to_dict()
             if "created_at" in data and data["created_at"]:
                 data["created_at"] = data["created_at"].isoformat() if hasattr(data["created_at"], 'isoformat') else str(data["created_at"])
             results.append({"id": doc.id, **data})
+            last_doc_id = doc.id
             
-        results.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
-        return {"data": results}
+        return {
+            "data": results,
+            "next_cursor": last_doc_id if len(results) == limit else None
+        }
     except Exception as e:
-        print("Error fetching tickets:", e)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -108,19 +174,38 @@ async def get_my_tickets(user: dict = Depends(get_current_user)):
 # 👑 ADMIN ROUTES (Strictly God Mode)
 # ==========================================
 
+# 🚨 THE FIX: Fully paginated Admin Tickets Route
 @router.get("/admin/all", tags=["Support & Admin"])
-async def get_all_campus_tickets(admin: dict = Depends(get_admin_user)):
+async def get_all_campus_tickets(
+    limit: int = Query(35, le=100),
+    cursor: Optional[str] = Query(None),
+    admin: dict = Depends(get_admin_user)
+):
     try:
-        tickets_query = db.collection("tickets").where("status", "==", TicketStatus.OPEN.value).stream()
+        query = db.collection("tickets")\
+            .where("status", "==", TicketStatus.OPEN.value)\
+            .order_by("created_at", direction=firestore.Query.DESCENDING)
+            
+        if cursor:
+            cursor_doc = db.collection("tickets").document(cursor).get()
+            if cursor_doc.exists:
+                query = query.start_after(cursor_doc)
+
+        tickets_stream = query.limit(limit).stream()
         results = []
-        for doc in tickets_query:
+        last_doc_id = None
+        
+        for doc in tickets_stream:
             data = doc.to_dict()
             if "created_at" in data and data["created_at"]:
                 data["created_at"] = data["created_at"].isoformat() if hasattr(data["created_at"], 'isoformat') else str(data["created_at"])
             results.append({"id": doc.id, **data})
+            last_doc_id = doc.id
             
-        results.sort(key=lambda x: str(x.get("created_at") or ""), reverse=True)
-        return {"data": results}
+        return {
+            "data": results,
+            "next_cursor": last_doc_id if len(results) == limit else None
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -129,7 +214,7 @@ async def get_all_campus_tickets(admin: dict = Depends(get_admin_user)):
 async def admin_reply_to_ticket(
     ticket_id: str, 
     reply: AdminTicketReply, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request,
     admin: dict = Depends(get_admin_user)
 ):
     try:
@@ -144,13 +229,12 @@ async def admin_reply_to_ticket(
         chat_room_id = ticket_data.get("chat_room_id")
         owner_id = ticket_data.get("owner_id")
         
-        # Update the actual Ticket document so the /support page can see it
         ticket_ref.update({
             "status": reply.status,
-            "admin_response": reply.admin_response
+            "admin_response": reply.admin_response,
+            "updated_at": firestore.SERVER_TIMESTAMP
         })
         
-        # Inject the message into the chat room
         chat_ref = db.collection("chat_rooms").document(chat_room_id)
         chat_ref.collection("messages").add({
             "sender_id": admin_id,
@@ -165,7 +249,6 @@ async def admin_reply_to_ticket(
             "updated_at": firestore.SERVER_TIMESTAMP
         })
         
-        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO USER
         if owner_id:
             await request.app.state.redis.enqueue_job(
                 'process_push_notification',
@@ -183,14 +266,13 @@ async def admin_reply_to_ticket(
 @router.put("/admin/{ticket_id}/resolve", tags=["Support & Admin"])
 async def resolve_ticket(
     ticket_id: str, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request, 
     admin: dict = Depends(get_admin_user)
 ):
     try:
         target_uid = None
         chat_room_id = ticket_id
 
-        # Check chat_rooms first
         room_ref = db.collection("chat_rooms").document(ticket_id)
         room_doc = room_ref.get()
         
@@ -205,7 +287,6 @@ async def resolve_ticket(
                 t.reference.update({"status": TicketStatus.RESOLVED.value})
                 
         else:
-            # Fallback if the ID was the ticket ID instead
             ticket_ref = db.collection("tickets").document(ticket_id)
             ticket_doc = ticket_ref.get()
             if ticket_doc.exists:
@@ -215,9 +296,11 @@ async def resolve_ticket(
                 ticket_ref.update({"status": TicketStatus.RESOLVED.value})
                 
                 if chat_room_id:
-                    db.collection("chat_rooms").document(chat_room_id).update({"status": TicketStatus.RESOLVED.value})
+                    db.collection("chat_rooms").document(chat_room_id).update({
+                        "status": TicketStatus.RESOLVED.value,
+                        "updated_at": firestore.SERVER_TIMESTAMP
+                    })
 
-        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO USER
         if target_uid and chat_room_id:
             await request.app.state.redis.enqueue_job(
                 'process_push_notification',
@@ -236,20 +319,19 @@ async def resolve_ticket(
 async def warn_user(
     target_uid: str, 
     req: WarnUserRequest, 
-    request: Request, # 🚨 Replaced BackgroundTasks with Request
+    request: Request, 
     admin: dict = Depends(get_admin_user)
 ):
-    """Admin initiates a Warning ticket directly into a user's inbox."""
     try:
-        # 1. Create the Chat Room
         chat_ref = db.collection("chat_rooms").document()
         chat_room_id = chat_ref.id
         
         chat_ref.set({
             "id": chat_room_id,
             "listing_id": "system_warning",
-            "buyer_id": target_uid, # The User receiving the warning
-            "seller_id": "ADMIN_TEAM", # Admin is the sender
+            "reference_type": "general", 
+            "buyer_id": target_uid, 
+            "seller_id": "ADMIN_TEAM", 
             "subject": f"⚠️ WARNING: {req.subject}",
             "last_message": req.message,
             "updated_at": firestore.SERVER_TIMESTAMP,
@@ -257,7 +339,6 @@ async def warn_user(
             "status": TicketStatus.OPEN.value
         })
         
-        # 2. Add Admin's Warning Message
         chat_ref.collection("messages").add({
             "sender_id": admin.get("uid"),
             "text": req.message,
@@ -265,7 +346,6 @@ async def warn_user(
             "created_at": firestore.SERVER_TIMESTAMP 
         })
 
-        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO USER
         await request.app.state.redis.enqueue_job(
             'process_push_notification',
             target_uid,

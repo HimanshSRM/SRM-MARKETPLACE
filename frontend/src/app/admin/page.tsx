@@ -6,10 +6,11 @@ import { useAuth } from '@/context/AuthContext';
 import { 
   getPendingShops, verifyShop, rejectShop, Shop,
   setUserRole,
-  getAllSupportTickets, warnUser, getAllUsers, moderateUser 
+  getAllSupportTickets, warnUser, getAllUsers, moderateUser,
+  getAdminListings, moderateListing
 } from '@/lib/api';
 
-type AdminTab = 'shops' | 'users' | 'support';
+type AdminTab = 'shops' | 'users' | 'products' | 'support';
 
 type ExtendedShop = Shop & {
   category?: string;
@@ -37,7 +38,12 @@ export default function AdminDashboardPage() {
 
   // Tab States
   const [pendingShops, setPendingShops] = useState<ExtendedShop[]>([]);
+  
+  // 🚨 THE FIX: Added Support Ticket Pagination State
   const [tickets, setTickets] = useState<any[]>([]);
+  const [ticketsCursor, setTicketsCursor] = useState<string | null>(null);
+  const [isTicketsLoading, setIsTicketsLoading] = useState(false);
+  const [hasMoreTickets, setHasMoreTickets] = useState(true);
   
   // User Directory State
   const [allUsers, setAllUsers] = useState<any[]>([]);
@@ -70,6 +76,15 @@ export default function AdminDashboardPage() {
   const [inboxFilter, setInboxFilter] = useState<'all' | 'needs_reply' | 'general' | 'moderation'>('needs_reply');
   const [moderationTarget, setModerationTarget] = useState<'all' | 'users' | 'items'>('all');
 
+  // --- PRODUCTS TAB STATE ---
+  const [adminProducts, setAdminProducts] = useState<any[]>([]);
+  const [productsCursor, setProductsCursor] = useState<string | null>(null);
+  const [productsFilter, setProductsFilter] = useState<'active' | 'suspended' | 'reported' | 'hidden'>('active');
+  const [selectedProduct, setSelectedProduct] = useState<any>(null);
+  const [isProductsLoading, setIsProductsLoading] = useState(false);
+  const [hasMoreProducts, setHasMoreProducts] = useState(true);
+  const [productReason, setProductReason] = useState('');
+
   // --- PROTECTOR ---
   useEffect(() => {
     if (isAuthLoading) return;
@@ -79,21 +94,16 @@ export default function AdminDashboardPage() {
     }
   }, [profile, isAuthLoading, router]);
 
-  // --- DATA FETCHING ---
+  // --- DATA FETCHING (Shops & Users) ---
   useEffect(() => {
     const fetchAdminData = async () => {
       if (!profile || profile.role !== 'admin') return;
 
       try {
         setIsDataLoading(true);
-        
-        // 🚨 CLEANUP: API wrapper handles the token!
         if (activeTab === 'shops') {
           const shops = await getPendingShops();
           setPendingShops(shops);
-        } else if (activeTab === 'support') {
-          const allTickets = await getAllSupportTickets();
-          setTickets(allTickets);
         } else if (activeTab === 'users') { 
           const usersList = await getAllUsers();
           setAllUsers(usersList);
@@ -107,11 +117,76 @@ export default function AdminDashboardPage() {
     fetchAdminData();
   }, [profile, activeTab, isAuthLoading]);
 
+  // --- 🚨 THE FIX: TICKETS PAGINATION FETCHER ---
+  const fetchTickets = async (loadMore = false) => {
+    if (!profile || profile.role !== 'admin') return;
+    setIsTicketsLoading(true);
+    try {
+      const currentCursor = loadMore ? (ticketsCursor || undefined) : undefined;
+      const res = await getAllSupportTickets(currentCursor); 
+      
+      // Handle the data securely whether api.ts extracts it or returns raw
+      const fetchedData = Array.isArray(res) ? res : (res.data || []);
+      const nextCur = res.next_cursor || null;
+
+      if (loadMore) {
+        setTickets(prev => [...prev, ...fetchedData]);
+      } else {
+        setTickets(fetchedData);
+      }
+      setTicketsCursor(nextCur);
+      setHasMoreTickets(!!nextCur);
+    } catch (error: any) {
+      console.error("Failed to fetch tickets:", error);
+    } finally {
+      setIsTicketsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'support') {
+      fetchTickets(false);
+    }
+  }, [activeTab]);
+
+  // --- PRODUCTS PAGINATION FETCHER ---
+  const fetchProducts = async (loadMore = false) => {
+    if (!profile || profile.role !== 'admin') return;
+    setIsProductsLoading(true);
+    try {
+      const currentCursor = loadMore ? (productsCursor || '') : '';
+      const statusParam = productsFilter === 'reported' ? '' : productsFilter;
+      const reportedOnly = productsFilter === 'reported';
+      
+      const res = await getAdminListings(20, currentCursor, statusParam, reportedOnly);
+      
+      if (loadMore) {
+        setAdminProducts(prev => [...prev, ...res.data]);
+      } else {
+        setAdminProducts(res.data);
+      }
+      setProductsCursor(res.next_cursor);
+      setHasMoreProducts(!!res.next_cursor);
+    } catch (error: any) {
+      console.error("Failed to fetch products:", error);
+      alert(`Fetch Error: ${error.message}\n\nCheck your backend terminal. If it asks for an index, click the Firebase link in your Python console to build it!`);
+    } finally {
+      setIsProductsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'products') {
+      fetchProducts(false);
+      setSelectedProduct(null);
+    }
+  }, [productsFilter, activeTab]);
+
+
   // --- SHOP HANDLERS ---
   const handleVerify = async (shopId: string) => {
     if (!window.confirm("Approve this shop to go live?")) return;
     try {
-      // 🚨 CLEANUP: API wrapper handles the token!
       await verifyShop(shopId);
       setPendingShops(pendingShops.filter(s => s.id !== shopId));
     } catch (error) { alert("Failed to verify shop."); }
@@ -121,7 +196,6 @@ export default function AdminDashboardPage() {
     const reason = window.prompt("Reason for rejection:");
     if (!reason) return;
     try {
-      // 🚨 CLEANUP: API wrapper handles the token!
       await rejectShop(shopId, reason);
       setPendingShops(pendingShops.filter(s => s.id !== shopId));
     } catch (error) { alert("Failed to reject shop."); }
@@ -133,9 +207,7 @@ export default function AdminDashboardPage() {
     
     try {
       setIsWarning(true);
-      // 🚨 CLEANUP: API wrapper handles the token!
       await moderateUser(selectedUser.uid, 'restore', 'Quick Unban via Directory', 'QUICK_ACTION_LOG');
-      
       alert(`${selectedUser.email} has been unbanned!`);
       setSelectedUser({ ...selectedUser, role: 'student', status: 'active' });
       setAllUsers(allUsers.map(u => u.uid === selectedUser.uid ? { ...u, role: 'student', status: 'active' } : u));
@@ -146,7 +218,61 @@ export default function AdminDashboardPage() {
     }
   };
 
-  // --- FILTER LOGIC ---
+  // --- DEDICATED QUICK RESTORE FOR PRODUCTS ---
+  const handleQuickProductRestore = async () => {
+    if (!selectedProduct) return;
+    if (!window.confirm(`Instantly restore "${selectedProduct.title || selectedProduct.name}" to active status?`)) return;
+
+    setIsWarning(true);
+    try {
+      await moderateListing(selectedProduct.id, 'restore', 'Quick Restore via Admin Directory', selectedProduct.shop_id);
+
+      const updatedProduct = { ...selectedProduct, status: 'active' };
+      setSelectedProduct(updatedProduct);
+      setAdminProducts(prev => prev.map(p => p.id === selectedProduct.id ? updatedProduct : p));
+    } catch (err: any) {
+      alert(err.message || `Failed to execute Quick Restore.`);
+    } finally {
+      setIsWarning(false);
+    }
+  };
+
+  // --- GENERAL PRODUCT ACTION HANDLER ---
+  const handleProductAction = async (action: 'warn' | 'hide' | 'delete' | 'restore') => {
+    if (!productReason && action !== 'restore') {
+        alert("Please provide a reason for this action (sent to the seller).");
+        return;
+    }
+    
+    const finalReason = action === 'restore' && !productReason ? 'Quick Restore via Admin Directory' : productReason;
+
+    if (!window.confirm(`Are you sure you want to ${action.toUpperCase()} this listing?`)) return;
+
+    setIsWarning(true);
+    try {
+        await moderateListing(selectedProduct.id, action, finalReason, selectedProduct.shop_id);
+        
+        // Optimistic UI Update
+        const newStatus = action === 'restore' ? 'active' : (action === 'hide' ? 'hidden' : selectedProduct.status);
+        
+        if (action === 'delete') {
+            setAdminProducts(prev => prev.filter(p => p.id !== selectedProduct.id));
+            setSelectedProduct(null);
+        } else {
+            const updatedProduct = { ...selectedProduct, status: newStatus };
+            setSelectedProduct(updatedProduct);
+            setAdminProducts(prev => prev.map(p => p.id === selectedProduct.id ? updatedProduct : p));
+        }
+        setProductReason('');
+        alert(`Product successfully ${action}ed.`);
+    } catch (err: any) {
+        alert(err.message || `Failed to ${action} product.`);
+    } finally {
+        setIsWarning(false);
+    }
+  };
+
+  // --- FILTER LOGIC FOR TICKETS ---
   const filteredTickets = tickets.filter(ticket => {
     const currentStatus = ticket.status || 'open';
     if (supportView === 'inbox' && currentStatus === 'resolved') return false;
@@ -207,12 +333,12 @@ export default function AdminDashboardPage() {
         
         <div className="mb-8">
           <h1 className="text-3xl font-black text-gray-900 tracking-tight">Admin Control Center</h1>
-          <p className="text-gray-500">Manage shops, users, and support tickets.</p>
+          <p className="text-gray-500">Manage shops, users, products, and support tickets.</p>
         </div>
 
         {/* Tab Navigation */}
         <div className="flex overflow-x-auto gap-2 mb-8 border-b border-gray-200 pb-2">
-          {(['shops', 'users', 'support'] as AdminTab[]).map((tab) => (
+          {(['shops', 'users', 'products', 'support'] as AdminTab[]).map((tab) => (
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
@@ -414,7 +540,6 @@ export default function AdminDashboardPage() {
                       </select>
                       <button onClick={async () => {
                         try {
-                          // 🚨 CLEANUP: API wrapper handles the token!
                           await setUserRole(selectedUser.uid, newRole);
                           alert(`Role updated to ${newRole}!`);
                           setSelectedUser({ ...selectedUser, role: newRole });
@@ -435,7 +560,6 @@ export default function AdminDashboardPage() {
                       if (!window.confirm(`Open an official warning thread with ${selectedUser.email}?`)) return;
                       try {
                         setIsWarning(true);
-                        // 🚨 CLEANUP: API wrapper handles the token!
                         const response = await warnUser(selectedUser.uid, warnSubject, warnMessage);
                         setWarnMessage(''); 
                         setWarnSubject('⚠️ Official Warning: Policy Violation');
@@ -462,6 +586,159 @@ export default function AdminDashboardPage() {
                         {isWarning ? 'Opening Chat...' : 'Open Moderation Chat'}
                       </button>
                     </form>
+                  </div>
+
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* --- TAB: PRODUCTS DIRECTORY --- */}
+        {activeTab === 'products' && (
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            
+            {/* LEFT COLUMN: THE FEED */}
+            <div className="md:col-span-1 bg-white p-4 rounded-3xl border border-gray-100 shadow-sm flex flex-col h-[600px]">
+              <h2 className="text-xl font-bold mb-4">Product Moderation</h2>
+
+              <div className="flex gap-2 overflow-x-auto mb-4 pb-2" style={{ scrollbarWidth: 'none' }}>
+                {['active', 'suspended', 'reported', 'hidden'].map((status) => (
+                  <button
+                    key={status}
+                    onClick={() => setProductsFilter(status as any)}
+                    className={`px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded-lg whitespace-nowrap transition-colors ${
+                      productsFilter === status 
+                        ? 'bg-blue-100 text-blue-700 border border-blue-200' 
+                        : 'bg-gray-50 text-gray-500 border border-gray-200 hover:bg-gray-100'
+                    }`}
+                  >
+                    {status}
+                  </button>
+                ))}
+              </div>
+
+              <div className="overflow-y-auto flex-1 space-y-2 pr-2">
+                {adminProducts.map(product => (
+                  <button 
+                    key={product.id}
+                    onClick={() => setSelectedProduct(product)}
+                    className={`w-full text-left p-3 rounded-xl border transition-all ${selectedProduct?.id === product.id ? 'bg-blue-50 border-blue-200' : 'bg-white border-gray-100 hover:border-gray-300'}`}
+                  >
+                    <p className="font-bold text-sm text-gray-900 line-clamp-1">{product.title || product.name || 'Unnamed'}</p>
+                    <div className="flex justify-between items-center mt-1">
+                      <span className={`text-[10px] font-bold uppercase tracking-wider ${
+                        product.status === 'suspended' ? 'text-red-600' : 
+                        product.status === 'hidden' ? 'text-orange-600' : 'text-green-600'
+                      }`}>
+                        {product.status || 'active'}
+                      </span>
+                      {product.report_count > 0 && <span className="text-xs font-black text-red-500 flex items-center gap-1">🚩 {product.report_count}</span>}
+                    </div>
+                  </button>
+                ))}
+
+                {isProductsLoading && <p className="text-sm text-gray-500 text-center py-4">Fetching items...</p>}
+                
+                {!isProductsLoading && hasMoreProducts && (
+                  <button 
+                    onClick={() => fetchProducts(true)}
+                    className="w-full mt-2 py-2 bg-gray-100 text-gray-700 text-xs font-bold rounded-xl hover:bg-gray-200 transition"
+                  >
+                    Load More ⬇️
+                  </button>
+                )}
+
+                {!isProductsLoading && adminProducts.length === 0 && (
+                  <p className="text-sm text-gray-400 text-center mt-10">No products found for this filter.</p>
+                )}
+              </div>
+            </div>
+
+            {/* RIGHT COLUMN: CONTROL PANEL */}
+            <div className="md:col-span-2">
+              {!selectedProduct ? (
+                <div className="h-full bg-white rounded-3xl border border-dashed border-gray-300 flex items-center justify-center p-8 text-center min-h-[400px]">
+                  <p className="text-gray-500 font-medium">Select a product from the directory to review and moderate.</p>
+                </div>
+              ) : (
+                <div className="bg-white p-6 rounded-3xl border border-gray-100 shadow-sm space-y-6">
+                  
+                  <div className="flex items-start gap-4 pb-4 border-b border-gray-100">
+                    {selectedProduct.image_url ? (
+                      <img src={selectedProduct.image_url} alt="Product" className="w-20 h-20 object-cover rounded-xl border border-gray-200 shrink-0" />
+                    ) : (
+                      <div className="w-20 h-20 bg-gray-100 rounded-xl flex items-center justify-center text-gray-400 shrink-0">📦</div>
+                    )}
+                    <div className="flex-1">
+                      <h2 className="text-2xl font-black text-gray-900">{selectedProduct.title || selectedProduct.name}</h2>
+                      <p className="text-sm font-bold text-gray-600 mt-1">Price: ₹{selectedProduct.price}</p>
+                      <p className="text-xs text-gray-400 mt-1 font-mono">Owner UID: {selectedProduct.owner_id || selectedProduct.seller_id}</p>
+                    </div>
+                    {selectedProduct.report_count > 0 && (
+                      <div className="bg-red-50 text-red-700 px-3 py-1.5 rounded-lg text-sm font-bold border border-red-200 shrink-0">
+                        🚩 {selectedProduct.report_count} Report(s)
+                      </div>
+                    )}
+                  </div>
+
+                  {/* 🚨 THE QUICK RESTORE BANNER */}
+                  {(selectedProduct.status === 'suspended' || selectedProduct.status === 'hidden') && (
+                    <div className="bg-orange-50 border border-orange-200 p-5 rounded-2xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm mb-6">
+                      <div>
+                        <h3 className="font-black text-orange-800 text-base flex items-center gap-2">
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                          Listing {selectedProduct.status === 'suspended' ? 'Suspended' : 'Hidden'}
+                        </h3>
+                        <p className="text-orange-700 text-xs mt-1 font-medium">This product is currently removed from the public feed.</p>
+                      </div>
+                      <button
+                        onClick={handleQuickProductRestore}
+                        disabled={isWarning}
+                        className="px-6 py-2.5 bg-green-600 text-white font-bold text-sm rounded-xl hover:bg-green-700 shadow-md disabled:opacity-50 transition w-full sm:w-auto flex justify-center items-center gap-2 shrink-0"
+                      >
+                        {isWarning ? 'Restoring...' : '⚡ Quick Restore'}
+                      </button>
+                    </div>
+                  )}
+
+                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-200">
+                     <p className="text-sm text-gray-700 whitespace-pre-wrap">{selectedProduct.description}</p>
+                  </div>
+
+                  <div className="p-5 bg-blue-50 rounded-2xl border border-blue-100">
+                    <h3 className="text-blue-800 font-bold mb-3 flex items-center gap-2">
+                      🛡️ Execute Moderation Action
+                    </h3>
+                    <div className="space-y-3">
+                      <textarea 
+                        required rows={2}
+                        value={productReason} onChange={(e) => setProductReason(e.target.value)}
+                        className="w-full p-3 bg-white border border-blue-200 rounded-xl outline-none text-sm font-medium"
+                        placeholder="Reason for taking action (Sent to the seller as an official warning)..."
+                      />
+                      
+                      <div className="grid grid-cols-2 gap-3 pt-2">
+                        <button 
+                          onClick={() => handleProductAction('warn')} disabled={isWarning}
+                          className="py-2.5 bg-yellow-100 text-yellow-800 border border-yellow-300 font-bold rounded-xl transition hover:bg-yellow-200 text-sm"
+                        >
+                          ⚠️ Issue Warning
+                        </button>
+                        <button 
+                          onClick={() => handleProductAction('hide')} disabled={isWarning}
+                          className="py-2.5 bg-orange-100 text-orange-800 border border-orange-300 font-bold rounded-xl transition hover:bg-orange-200 text-sm"
+                        >
+                          ⏸️ Hide Listing
+                        </button>
+                        <button 
+                          onClick={() => handleProductAction('delete')} disabled={isWarning}
+                          className="col-span-2 py-2.5 bg-red-600 text-white font-bold rounded-xl transition hover:bg-red-700 text-sm shadow-sm"
+                        >
+                          🗑️ Delete & Strike Seller
+                        </button>
+                      </div>
+                    </div>
                   </div>
 
                 </div>
@@ -613,7 +890,21 @@ export default function AdminDashboardPage() {
                       );
                     })}
                     
-                    {filteredTickets.length === 0 && (
+                    {/* 🚨 THE FIX: Pagination "Load More" Button */}
+                    {isTicketsLoading && <p className="text-sm text-gray-500 text-center py-4">Fetching tickets...</p>}
+                    
+                    {!isTicketsLoading && hasMoreTickets && filteredTickets.length > 0 && (
+                      <div className="flex justify-center pt-4">
+                        <button 
+                          onClick={() => fetchTickets(true)}
+                          className="px-6 py-2.5 bg-gray-100 text-gray-700 text-sm font-bold rounded-xl hover:bg-gray-200 transition"
+                        >
+                          Load More ⬇️
+                        </button>
+                      </div>
+                    )}
+
+                    {filteredTickets.length === 0 && !isTicketsLoading && (
                       <div className="text-center py-16 bg-white rounded-3xl border border-dashed border-gray-300">
                         <h3 className="text-xl font-bold text-gray-400">Inbox Zero!</h3>
                         <p className="text-sm text-gray-400 mt-2">No tickets match this filter.</p>

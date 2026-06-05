@@ -3,10 +3,14 @@
 import React, { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { getActiveGroupOrders, createGroupOrder, joinGroupOrder, updateParticipantCart, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage, updateParticipantPrice } from '@/lib/api';
+import { createGroupOrder, joinGroupOrder, updateParticipantCart, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage, updateParticipantPrice, getPastPools } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
+import { QRCodeSVG } from 'qrcode.react';
+
+// 🚨 THE FIX: Import the GuestBlockerModal so we can trigger it directly
+import GuestBlockerModal from '@/components/GuestBlockerModal'; 
 
 // --- INTERFACES ---
 interface PoolItem { item_name: string; quantity: number; estimated_price: number; }
@@ -15,83 +19,162 @@ interface GroupOrder {
   id: string; host_id: string; host_name: string; app_name: string; pickup_location: string; contact_number: string;
   upi_id?: string; cart_link?: string; delivery_fee?: number; 
   status: 'open' | 'locked' | 'delivered' | 'cancelled' | 'settled'; 
-  expires_at: string; chat_room_id: string; participants: Participant[]; participant_ids: string[];
+  expires_at: string; created_at: string; chat_room_id: string; participants: Participant[]; participant_ids: string[];
 }
 
 export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const router = useRouter();
-  const { profile } = useAuth(); 
+  const { profile, isLoading: isAuthLoading } = useAuth(); 
   
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState<GroupOrder | null>(null); 
   const [showManageModal, setShowManageModal] = useState<GroupOrder | null>(null); 
   
+  // 🚨 THE FIX: Added state for the Verification Modal
+  const [showVerifyModal, setShowVerifyModal] = useState(false);
+  
   const [myActivePools, setMyActivePools] = useState<GroupOrder[]>([]);
   const [discoverPools, setDiscoverPools] = useState<GroupOrder[]>([]);
-  const [pastPools, setPastPools] = useState<GroupOrder[]>([]);
+  
+  const [realtimePast, setRealtimePast] = useState<GroupOrder[]>([]); 
+  const [pastPools, setPastPools] = useState<GroupOrder[]>([]); 
+  const [pastCursor, setPastCursor] = useState<string | null>(null);
+  const [isLoadingPast, setIsLoadingPast] = useState(false);
+  const [hasMorePast, setHasMorePast] = useState(true);
   
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const fetchOrders = async (showSpinner = true) => {
-    if (showSpinner) setIsLoading(true);
+  // --- PAST POOLS FETCHER ---
+  const fetchPastOrders = async (cursor = '', reset = false) => {
+    if (!currentUser?.uid || profile?.role === 'guest') return;
+    setIsLoadingPast(true);
     try {
-      const data = await getActiveGroupOrders();
-      
+      const res = await getPastPools(cursor || undefined);
+      const newData = res.data || [];
+      if (reset) {
+        setPastPools(newData);
+      } else if (cursor) {
+        setPastPools(prev => [...prev, ...newData]);
+      } else {
+        setPastPools(newData);
+      }
+      setPastCursor(res.next_cursor || null);
+      setHasMorePast(!!res.next_cursor);
+    } catch (e) {
+      console.error("Failed to load past orders", e);
+    } finally {
+      setIsLoadingPast(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPastOrders('', true);
+  }, [currentUser?.uid, profile?.role]);
+
+  // DIRECT FIREBASE LISTENER 
+  useEffect(() => {
+    if (!currentUser?.uid || !auth.currentUser || profile?.role === 'guest') {
+      setIsLoading(false);
+      return;
+    }
+
+    const q = query(collection(db, 'group_orders'), where('status', 'in', ['open', 'locked', 'delivered']));
+    
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })) as GroupOrder[];
+
+      const sortByNewest = (a: GroupOrder, b: GroupOrder) => {
+        const timeA = new Date(a.created_at || 0).getTime();
+        const timeB = new Date(b.created_at || 0).getTime();
+        return timeB - timeA;
+      };
+
       const mine = data.filter((o: GroupOrder) => 
         o.host_id === currentUser.uid || 
         o.participant_ids?.includes(currentUser.uid) || 
         o.participants?.some(p => p.user_id === currentUser.uid)
       );
 
-      // BUCKET 1: Active
-      setMyActivePools(mine.filter((o: GroupOrder) => o.status === 'open' || o.status === 'locked'));
-      
-      // BUCKET 2: Past
-      setPastPools(mine.filter((o: GroupOrder) => o.status === 'delivered' || o.status === 'cancelled' || o.status === 'settled'));
-
-      // BUCKET 3: Discover
+      setMyActivePools(mine.filter((o: GroupOrder) => o.status === 'open' || o.status === 'locked').sort(sortByNewest));
+      setRealtimePast(mine.filter((o: GroupOrder) => o.status === 'delivered').sort(sortByNewest));
       setDiscoverPools(data.filter((o: GroupOrder) => 
         o.status === 'open' && 
         o.host_id !== currentUser.uid && 
         !o.participant_ids?.includes(currentUser.uid) 
-      ));
+      ).sort(sortByNewest));
       
-      if (showManageModal) {
-        const updatedOrder = data.find((o: GroupOrder) => o.id === showManageModal.id);
-        if (updatedOrder) {
-          setShowManageModal(updatedOrder);
-        } else {
-          setShowManageModal(null); 
-        }
-      }
-    } catch (err) { 
-      console.error("Failed to load pools", err); 
-    } 
-    finally { 
-      if (showSpinner) setIsLoading(false); 
-    }
-  };
+      setShowManageModal(prev => {
+        if (!prev) return null;
+        return data.find((o: GroupOrder) => o.id === prev.id) || null;
+      });
 
-  useEffect(() => {
-    if (!currentUser?.uid || !auth.currentUser) return;
-    
-    fetchOrders(true);
-
-    let timeoutId: NodeJS.Timeout;
-    const q = collection(db, 'group_orders');
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.metadata.hasPendingWrites) {
-         clearTimeout(timeoutId);
-         timeoutId = setTimeout(() => { fetchOrders(false); }, 2000); 
-      }
+      setIsLoading(false);
     });
 
-    return () => {
-      unsubscribe();
-      clearTimeout(timeoutId);
-    };
-  }, [currentUser]);
+    return () => unsubscribe();
+  }, [currentUser?.uid, profile?.role]);
+
+  const triggerVisualRefresh = () => {
+    setIsRefreshing(true);
+    fetchPastOrders('', true).finally(() => {
+      setTimeout(() => setIsRefreshing(false), 500);
+    });
+  };
+
+  if (isAuthLoading) return null;
+
+  // ==========================================
+  // GUEST VIEW BLOCK
+  // ==========================================
+  if (profile?.role === 'guest') {
+    return (
+      <div className="animate-fade-in-up max-w-2xl mx-auto mt-10">
+        <div className="bg-white p-8 sm:p-12 rounded-[32px] shadow-xl border border-gray-100 text-center relative overflow-hidden">
+          <div className="absolute top-0 right-0 -mr-8 -mt-8 w-32 h-32 bg-purple-50 rounded-full blur-3xl opacity-60"></div>
+          <div className="absolute bottom-0 left-0 -ml-8 -mb-8 w-32 h-32 bg-blue-50 rounded-full blur-3xl opacity-60"></div>
+          
+          <div className="relative z-10">
+            <div className="w-24 h-24 bg-gradient-to-tr from-purple-100 to-blue-50 text-purple-600 rounded-full flex items-center justify-center mx-auto mb-6 text-4xl shadow-inner ring-4 ring-white">🛒</div>
+            <h2 className="text-3xl font-black text-gray-900 mb-3 tracking-tight">Unlock Cart Pooling</h2>
+            <p className="text-gray-500 font-medium mb-8 max-w-md mx-auto leading-relaxed">
+              Stop paying high delivery fees on Blinkit, Zepto, and Swiggy. Join forces with other students in your hostel block to split surge pricing and delivery costs.
+            </p>
+            
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-10 text-left max-w-lg mx-auto">
+              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                <span className="text-xl mb-2 block">💸</span>
+                <h4 className="font-bold text-gray-900 text-sm">Split Delivery Fees</h4>
+                <p className="text-xs text-gray-500 mt-1">Automatically divide extra app charges evenly.</p>
+              </div>
+              <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100">
+                <span className="text-xl mb-2 block">📱</span>
+                <h4 className="font-bold text-gray-900 text-sm">Shared Cart Links</h4>
+                <p className="text-xs text-gray-500 mt-1">Paste your Blinkit cart link to join an order instantly.</p>
+              </div>
+            </div>
+
+            <div className="space-y-3 max-w-xs mx-auto">
+              {/* 🚨 THE FIX: Replaced login route with direct trigger to the GuestBlockerModal */}
+              <button onClick={() => setShowVerifyModal(true)} className="w-full py-4 bg-gray-900 text-white font-black rounded-xl hover:bg-black active:scale-95 transition-all shadow-md">
+                Verify ID
+              </button>
+              <button onClick={() => router.push('/')} className="w-full py-3 text-gray-500 font-bold hover:bg-gray-50 rounded-xl transition-colors">
+                Return to Dashboard
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* 🚨 THE FIX: Renders the modal natively on top of the Guest page when they click the button */}
+        {showVerifyModal && <GuestBlockerModal onClose={() => setShowVerifyModal(false)} />}
+      </div>
+    );
+  }
+
+  const combinedPastPoolsMap = new Map();
+  [...pastPools, ...realtimePast].forEach(p => combinedPastPoolsMap.set(p.id, p));
+  const combinedPastPools = Array.from(combinedPastPoolsMap.values()).sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
 
   return (
     <div className="space-y-10 animate-fade-in-up">
@@ -103,12 +186,12 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
           <button 
-            onClick={() => fetchOrders(true)} 
-            disabled={isLoading}
+            onClick={triggerVisualRefresh} 
+            disabled={isLoading || isRefreshing}
             className="px-4 py-3 bg-white text-purple-600 border border-purple-200 font-bold rounded-xl shadow-sm hover:bg-purple-100 transition flex items-center justify-center disabled:opacity-50"
             title="Refresh Feed"
           >
-            <svg className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+            <svg className={`w-5 h-5 ${isRefreshing || isLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
           </button>
           <button onClick={() => setShowCreateModal(true)} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white font-bold rounded-xl shadow-sm hover:bg-purple-700 transition">
             + Start an Order
@@ -120,43 +203,48 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
         <div className="text-center py-10"><div className="w-8 h-8 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin mx-auto"></div></div>
       ) : (
         <>
-          {/* 1. MY ACTIVE POOLS */}
           {myActivePools.length > 0 && (
             <div>
               <h3 className="text-lg font-black text-gray-900 mb-4 flex items-center gap-2">🛒 My Active Pools</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {myActivePools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
+                {myActivePools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} />)}
               </div>
             </div>
           )}
 
-          {/* 2. DISCOVER CAMPUS ORDERS */}
           <div>
             <h3 className="text-lg font-black text-gray-900 mb-4 flex items-center gap-2">🔍 Discover Campus Orders</h3>
             {discoverPools.length === 0 ? (
               <div className="text-center py-16 bg-white rounded-3xl border border-dashed border-gray-300"><p className="text-gray-500 font-medium">No open cart pools to join right now.</p></div>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {discoverPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
+                {discoverPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} />)}
               </div>
             )}
           </div>
 
-          {/* 3. PAST ORDERS */}
-          {pastPools.length > 0 && (
+          {combinedPastPools.length > 0 && (
             <div className="pt-8 border-t border-gray-200">
               <h3 className="text-lg font-black text-gray-400 mb-4 flex items-center gap-2">🕰️ Past Orders</h3>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {pastPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} onRefresh={() => fetchOrders(true)}/>)}
+                {combinedPastPools.map(order => <GroupOrderCard key={order.id} order={order} currentUser={currentUser} router={router} onJoin={() => setShowJoinModal(order)} onManage={() => setShowManageModal(order)} />)}
               </div>
+
+              {hasMorePast && (
+                <div className="flex justify-center pt-6 pb-2">
+                  <button onClick={() => fetchPastOrders(pastCursor || '')} disabled={isLoadingPast} className="px-6 py-2.5 bg-gray-100 text-gray-700 text-xs font-bold rounded-xl hover:bg-gray-200 transition">
+                    {isLoadingPast ? 'Loading...' : 'Load Older History ⬇️'}
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </>
       )}
 
-      {showCreateModal && <CreateOrderModal profile={profile} onClose={() => setShowCreateModal(false)} onSuccess={() => { setShowCreateModal(false); fetchOrders(true); }} />}
-      {showJoinModal && <JoinOrderModal profile={profile} currentUser={currentUser} order={showJoinModal} onClose={() => setShowJoinModal(null)} router={router} onRefresh={() => fetchOrders(true)} />}
-      {showManageModal && <ManageOrderModal order={showManageModal} currentUser={currentUser} onClose={() => setShowManageModal(null)} onRefresh={() => fetchOrders(true)} />}
+      {showCreateModal && <CreateOrderModal profile={profile} onClose={() => setShowCreateModal(false)} onSuccess={() => setShowCreateModal(false)} />}
+      {showJoinModal && <JoinOrderModal profile={profile} currentUser={currentUser} order={showJoinModal} onClose={() => setShowJoinModal(null)} router={router} />}
+      {showManageModal && <ManageOrderModal order={showManageModal} currentUser={currentUser} onClose={() => setShowManageModal(null)} onUpdate={triggerVisualRefresh} />}
     </div>
   );
 }
@@ -164,7 +252,7 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
 // ==========================================
 // 1. THE GROUP ORDER CARD
 // ==========================================
-function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, router }: any) {
+function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
   const [timeLeft, setTimeLeft] = useState('');
   
   const isHost = currentUser?.uid === order.host_id;
@@ -219,7 +307,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
     }
     try {
       await updateGroupOrderStatus(order.id, newStatus, fee); 
-      onRefresh();
     } catch (err) {
       console.error(err);
       alert("Failed to update order status");
@@ -246,15 +333,13 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
             </div>
             
             <div className="flex flex-col">
-              {/* 🚨 RESPONSIVE FIX: flex-wrap, gap-y-1, and truncate for long names */}
               <div className="flex items-center flex-wrap gap-2 gap-y-1">
                 <h3 className="text-lg font-bold text-gray-900 leading-none truncate max-w-[180px] sm:max-w-xs">
                   {order.host_name}'s Order
                 </h3>
-                {/* 🚨 shrink-0 keeps the badge from getting squished */}
                 {isHost && <span className="shrink-0 text-[10px] text-yellow-700 bg-yellow-100 px-1.5 py-0.5 rounded font-black border border-yellow-200" title="You are the host">👑 Host</span>}
               </div>
-              <span className="text-[10px] text-gray-400 font-medium mt-1">🕒 {formatOrderTime(order.expires_at)}</span>
+              <span className="text-[10px] text-gray-400 font-medium mt-1">🕒 {formatOrderTime(order.created_at)}</span>
             </div>
 
             {!isHost && hasJoined && !isPast && order.contact_number && (
@@ -348,7 +433,7 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, onRefresh, route
 // ==========================================
 // 2. THE MANAGE ORDER MODAL (Host Edit Prices)
 // ==========================================
-function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: GroupOrder, currentUser: any, onClose: () => void, onRefresh: () => Promise<void> }) {
+function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: GroupOrder, currentUser: any, onClose: () => void, onUpdate: () => void }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isBlasting, setIsBlasting] = useState(false); 
   const totalPoolValue = order.participants.reduce((acc, p) => acc + p.total_estimated_price, 0);
@@ -359,15 +444,13 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
   const [editPrice, setEditPrice] = useState<string>('');
   const [isUpdatingPrice, setIsUpdatingPrice] = useState(false);
 
-  const handleRefresh = async () => { setIsRefreshing(true); await onRefresh(); setIsRefreshing(false); };
-
   const handleKick = async (userId: string, userName: string) => {
     if (!window.confirm(`Are you sure you want to remove ${userName} from the order?`)) return;
     setIsRefreshing(true);
     try {
       await kickParticipant(order.id, userId); 
-      await onRefresh(); 
-    } catch (err: any) { alert(err.message || "Failed to remove user"); setIsRefreshing(false); }
+    } catch (err: any) { alert(err.message || "Failed to remove user"); }
+    finally { setIsRefreshing(false); }
   };
 
   const handleSettle = async () => {
@@ -375,8 +458,8 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     setIsRefreshing(true);
     try {
       await settleGroupOrder(order.id);
+      onUpdate();
       onClose();
-      await onRefresh();
     } catch (err: any) {
       alert(err.message || "Failed to settle order");
       setIsRefreshing(false);
@@ -389,8 +472,8 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     setIsRefreshing(true);
     try {
       await updateGroupOrderStatus(order.id, 'cancelled');
+      onUpdate();
       onClose(); 
-      await onRefresh(); 
     } catch (err: any) {
       alert(err.message || "Failed to cancel order");
       setIsRefreshing(false);
@@ -448,7 +531,6 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
     try {
       await updateParticipantPrice(order.id, userId, newPrice);
       setEditingUserId(null);
-      await onRefresh();
     } catch (err: any) {
       alert(err.message || "Failed to update price");
     } finally {
@@ -479,7 +561,6 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
                 {isBlasting ? 'Sending...' : 'Send to Chat'}
               </button>
             )}
-            <button onClick={handleRefresh} disabled={isRefreshing} className="p-2 bg-purple-50 text-purple-600 rounded-xl hover:bg-purple-100 transition"><svg className={`w-5 h-5 ${isRefreshing ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg></button>
             <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 rounded-xl transition"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
           </div>
         </div>
@@ -531,7 +612,7 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
                     {p.cart_link ? (
                       <div className="mt-2 mb-3">
                          <a href={p.cart_link} target="_blank" rel="noopener noreferrer" className="text-xs font-bold text-blue-600 hover:text-blue-800 bg-blue-50 px-3 py-1.5 rounded-lg inline-flex items-center gap-1 transition">
-                           🔗 Open Shared Cart
+                            🔗 Open Shared Cart
                          </a>
                       </div>
                     ) : (
@@ -607,7 +688,7 @@ function ManageOrderModal({ order, currentUser, onClose, onRefresh }: { order: G
               onClick={handleCancelOrder} 
               className="text-red-500 hover:text-red-700 text-xs font-bold uppercase tracking-wider flex items-center gap-1 transition"
             >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M10 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2-2m7-2a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
               Cancel Entire Order
             </button>
           </div>
@@ -722,7 +803,7 @@ function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClo
 // ==========================================
 // 4. THE JOIN / EDIT MODAL (Hybrid System & Persistent Auto-Fill)
 // ==========================================
-function JoinOrderModal({ profile, currentUser, order, onClose, router, onRefresh }: { profile: any, currentUser: any, order: GroupOrder, onClose: () => void, router: any, onRefresh?: () => void }) {
+function JoinOrderModal({ profile, currentUser, order, onClose, router }: { profile: any, currentUser: any, order: GroupOrder, onClose: () => void, router: any }) {
   const existingParticipant = order.participants.find(p => p.user_id === currentUser?.uid);
   const isEditing = !!existingParticipant;
 
@@ -809,7 +890,6 @@ function JoinOrderModal({ profile, currentUser, order, onClose, router, onRefres
         await updateParticipantCart(order.id, payload);
         alert("Cart updated successfully!");
         onClose();
-        if (onRefresh) onRefresh();
       } else {
         await joinGroupOrder(order.id, payload); 
         router.push(`/chat/${order.chat_room_id}`); 

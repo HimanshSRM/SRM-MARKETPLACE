@@ -31,7 +31,6 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
 
     const fetchInitialUnread = async () => {
       try {
-        // 🚨 CLEANUP: We just check if the user exists. api.ts handles the actual token now!
         if (!auth.currentUser) return;
 
         const inbox = await getInbox();
@@ -67,15 +66,16 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
             const targetUrl = payload.data?.url || '/inbox';
             const currentPath = window.location.pathname;
 
-            // Suppress toast if they are already in the chat room
+            // Suppress toast if they are already in the chat room they are being alerted about
             if (currentPath === targetUrl) return; 
 
             setUnreadCount(prev => prev + 1);
 
+            // 🚨 THE FIX: Clickable In-App Chat Toast
             toast.custom((t) => (
               <div 
                 onClick={() => { toast.dismiss(t.id); router.push(targetUrl); }} 
-                className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-blue-500 flex items-start gap-3"
+                className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-blue-500 flex items-start gap-3 hover:bg-gray-50 transition"
               >
                 <div className="text-2xl">💬</div>
                 <div>
@@ -93,14 +93,14 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
             collection(db, 'group_orders'),
             where('status', '==', 'open'),
             orderBy('created_at', 'desc'),
-            limit(1) // Only watch the very top of the list for massive cost savings
+            limit(1) 
           );
 
           let isInitialLoad = true;
 
           unsubscribePools = onSnapshot(poolsQuery, (snapshot) => {
             if (isInitialLoad) {
-              isInitialLoad = false; // Ignore the pools that already existed when the app opened
+              isInitialLoad = false; 
               return;
             }
 
@@ -110,10 +110,17 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
                 
                 // Don't show the broadcast to the person who just created it!
                 if (newPool.host_id !== profile.uid) {
+                  // 🚨 THE FIX: Clickable Pool Broadcast that forces the homepage to open the right tab!
                   toast.custom((t) => (
                     <div 
-                      onClick={() => { toast.dismiss(t.id); router.push('/'); }} 
-                      className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-purple-500 flex items-start gap-3 animate-fade-in-up"
+                      onClick={() => { 
+                        toast.dismiss(t.id); 
+                        if (typeof window !== 'undefined') {
+                          localStorage.setItem('homeFeedTab', 'pools'); // Forces the home page state
+                        }
+                        router.push('/'); 
+                      }} 
+                      className="cursor-pointer bg-white p-4 rounded-xl shadow-2xl border-l-4 border-purple-500 flex items-start gap-3 animate-fade-in-up hover:bg-purple-50 transition"
                     >
                       <div className="text-2xl">🛒</div>
                       <div>
@@ -121,10 +128,10 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
                         <p className="text-xs text-gray-600">
                           <span className="font-bold">{newPool.host_name}</span> just started an order to {newPool.pickup_location}.
                         </p>
-                        <p className="text-[10px] text-purple-600 font-bold mt-1 uppercase">Click to view feed</p>
+                        <p className="text-[10px] text-purple-600 font-bold mt-1.5 uppercase tracking-wider">Click to view feed →</p>
                       </div>
                     </div>
-                  ), { duration: 6000, position: 'top-center' }); // Drops down prominently from the top center
+                  ), { duration: 6000, position: 'top-center' }); 
                 }
               }
             });

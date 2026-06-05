@@ -3,7 +3,7 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import { getLiveProducts, Product, initiateChat } from '@/lib/api';
+import { getLiveProducts, fetchLiveRequests, Product, initiateChat } from '@/lib/api';
 import ReportModal from '@/components/ReportModal';
 import GroupOrdersTab from '@/components/GroupOrdersTab';
 
@@ -32,11 +32,40 @@ const CATEGORY_MAP = {
   ]
 };
 
+function ExpandableDescription({ text }: { text: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  if (!text) return null;
+
+  const isLong = text.length > 70; 
+
+  return (
+    <div className="mt-2 flex flex-col items-start flex-grow">
+      <p className={`text-sm text-gray-500 leading-relaxed transition-all duration-300 ${isExpanded ? '' : 'line-clamp-2'}`}>
+        {text}
+      </p>
+      
+      {isLong && (
+        <button 
+          onClick={(e) => {
+            e.preventDefault(); 
+            e.stopPropagation();
+            setIsExpanded(!isExpanded);
+          }} 
+          className="text-[10px] font-black uppercase tracking-widest text-blue-600 hover:text-blue-800 mt-1.5 transition-colors"
+        >
+          {isExpanded ? 'Read Less' : 'Read More'}
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function HomePage() {
   const { profile, withRoleCheck, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
-  // 🌟 PAGINATION STATE
+  // 🌟 PAGINATION STATE (Already perfectly set up by you!)
   const [products, setProducts] = useState<Product[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -48,7 +77,6 @@ export default function HomePage() {
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [isRestoringState, setIsRestoringState] = useState(true);
 
-  // 1. Load saved filters on initial render
   useEffect(() => {
     if (typeof window !== 'undefined') {
       const savedTab = localStorage.getItem('homeFeedTab');
@@ -59,7 +87,6 @@ export default function HomePage() {
     setIsRestoringState(false);
   }, []);
 
-  // 2. Save filters to memory whenever they change
   useEffect(() => {
     if (!isRestoringState) {
       localStorage.setItem('homeFeedTab', activeTab);
@@ -67,21 +94,30 @@ export default function HomePage() {
     }
   }, [activeTab, activeCategory, isRestoringState]);
 
-  // Reporting State
   const [reportingListing, setReportingListing] = useState<{id: string, title: string} | null>(null);
 
-  // 🌟 FETCH LOGIC
-  const fetchProducts = async (cursor = '', category = '', reset = false) => {
+  const fetchProducts = async (cursor = '', category = '', reset = false, tabToFetch = activeTab) => {
     try {
-      const response = await getLiveProducts(15, cursor, category === 'all' ? '' : category);
-      
-      if (reset) {
-        setProducts(response.data);
+      let response;
+      const catParam = category === 'all' ? '' : category;
+      const safeCursor = cursor || undefined; // Safely pass undefined if empty
+
+      if (tabToFetch === 'request') {
+        response = await fetchLiveRequests(catParam, safeCursor as any);
       } else {
-        setProducts(prev => [...prev, ...response.data]);
+        response = await getLiveProducts(15, safeCursor, catParam);
       }
       
-      setNextCursor(response.next_cursor);
+      // 🚨 UI SAFEGUARD: Added fallback empty arrays to prevent mapping crashes
+      const newData = response?.data || [];
+      
+      if (reset) {
+        setProducts(newData);
+      } else {
+        setProducts(prev => [...prev, ...newData]);
+      }
+      
+      setNextCursor(response?.next_cursor || null);
     } catch (err: any) {
       console.error("Feed Error:", err);
       if (err.message && err.message.includes("Access denied")) {
@@ -92,22 +128,18 @@ export default function HomePage() {
     }
   };
 
-  // 🚨 2. COMBINED & SMART USE EFFECT
   useEffect(() => {
     if (isAuthLoading || isRestoringState) return;
 
-    // 🚨 FETCH REGARDLESS OF AUTH STATUS to populate the teaser background!
     setIsLoading(true);
     setError(null);
-    fetchProducts('', activeCategory, true).finally(() => setIsLoading(false));
-
+    fetchProducts('', activeCategory, true, activeTab).finally(() => setIsLoading(false));
   }, [profile, isAuthLoading, isRestoringState, activeCategory, activeTab]); 
 
-  // 3. The "Load More" Handler
   const handleLoadMore = async () => {
     if (!nextCursor || isFetchingMore) return;
     setIsFetchingMore(true);
-    await fetchProducts(nextCursor, activeCategory, false);
+    await fetchProducts(nextCursor, activeCategory, false, activeTab);
     setIsFetchingMore(false);
   };
 
@@ -120,13 +152,16 @@ export default function HomePage() {
 
     try {
       const ownerId = product.owner_id || product.seller_id || product.user_id || product.creator_id;
-
       if (!ownerId) {
         alert("Error: This product is missing an owner ID in the database.");
         return;
       }
 
-      const initialMessage = `Hi! I saw your listing for "${product.title}". Is this still available?`;
+      const isRequest = product.type === 'request';
+      const initialMessage = isRequest 
+        ? `Hi! I saw your request for "${product.title}". I might be able to help!` 
+        : `Hi! I saw your listing for "${product.title}". Is this still available?`;
+
       const room = await initiateChat(product.id, ownerId, initialMessage);
       const roomId = room.id || room.room_id; 
       
@@ -159,7 +194,6 @@ export default function HomePage() {
 
       {error !== "locked" && (
         <>
-          {/* TABS (Visible to all, so teaser looks realistic) */}
           <div className="flex flex-wrap gap-2 mb-4 bg-gray-100/50 p-1.5 rounded-xl w-full sm:w-fit">
             <button onClick={() => handleTabChange('all')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>All Feed</button>
             <button onClick={() => handleTabChange('product')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'product' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}>Products</button>
@@ -168,7 +202,6 @@ export default function HomePage() {
             <button onClick={() => handleTabChange('pools')} className={`px-6 py-2.5 rounded-lg text-sm font-semibold transition-all ${activeTab === 'pools' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-200/50'}`}> Cart Pools</button>
           </div>
 
-          {/* CATEGORIES */}
           {activeTab !== 'all' && activeTab !== 'pools' && CATEGORY_MAP[activeTab as keyof typeof CATEGORY_MAP] && (
             <div className="flex flex-wrap gap-2 mb-8">
               <button
@@ -195,31 +228,19 @@ export default function HomePage() {
         </>
       )}
 
-      {/* 🚨 THE RENDER WRAPPER: If not logged in, we blur the content! */}
       <div className="relative">
-        
-        {/* If logged out, render the massive Hero Overlay */}
         {!profile && !isAuthLoading && !isLoading && (
-          // 🚨 POSITIONS Overlay in the center with INTENSE BLUR!
           <div className="absolute inset-0 z-20 flex flex-col items-center justify-center pt-16 sm:pt-32 px-4 backdrop-blur-[12px] bg-white/40">
             <div className="relative z-10 text-center max-w-2xl mx-auto p-6 sm:p-8 bg-white/90 backdrop-blur-md rounded-3xl shadow-2xl border border-white/50">
-              
-              {/* RESTORED circular 'S' logo icon for better branding */}
-              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white mb-6 shadow-lg transform -rotate-3 font-black text-4xl">
-                 S
-              </div>
-              
+              <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-blue-600 text-white mb-6 shadow-lg transform -rotate-3 font-black text-4xl">S</div>
               <h2 className="text-3xl sm:text-5xl font-black text-gray-900 tracking-tight mb-4 leading-tight">
                 Your Campus. <br className="hidden sm:block" /> 
                 <span className="text-blue-600">Your Marketplace.</span>
               </h2>
-              
               <p className="text-base sm:text-lg text-gray-600 font-medium mb-8 max-w-md mx-auto leading-relaxed">
                 Buy, sell, and split deliveries instantly. Verified students only. No outsiders, no scams.
               </p>
-              
               <div className="flex flex-col sm:flex-row items-center justify-center gap-4 w-full px-4 sm:px-0">
-                {/* 🚨 CONSOLIDATED BUTTON: One primary button for both actions! */}
                 <button 
                   onClick={() => router.push('/login')} 
                   className="w-full sm:w-auto px-12 py-4 bg-blue-600 text-white rounded-2xl font-black text-lg shadow-lg hover:bg-blue-700 hover:shadow-xl transition-all active:scale-95"
@@ -228,13 +249,10 @@ export default function HomePage() {
                 </button>
               </div>
             </div>
-            
-            {/* Reduced the fade so more content is visible above the bottom badges */}
             <div className="absolute bottom-0 left-0 right-0 h-40 bg-gradient-to-t from-gray-50 to-transparent"></div>
           </div>
         )}
 
-        {/* 🚨 THE ACTUAL CONTENT: It renders underneath the blur! */}
         <div className={!profile && !isAuthLoading && !isLoading ? "select-none pointer-events-none opacity-60 overflow-hidden max-h-[80vh]" : ""}>
           {isAuthLoading || isLoading || isRestoringState ? (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -261,54 +279,97 @@ export default function HomePage() {
             <>
               {/* THE GRID */}
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-                {displayedProducts.map((product: any) => (
-                  <div key={product.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden flex flex-col">
-                    <div className="h-48 bg-gray-100 w-full relative group">
-                      {product.image_url ? (
-                        <img src={product.image_url} alt={product.title} className="w-full h-full object-cover" />
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-gray-400">
-                          <svg className="w-12 h-12 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                {displayedProducts.map((product: any) => {
+                  const isRequest = product.type === 'request';
+                  const isService = product.type === 'service';
+                  const isProduct = !isRequest && !isService;
+                  
+                  return (
+                    <div key={product.id} className="bg-white rounded-2xl border border-gray-100 shadow-sm hover:shadow-md transition-shadow overflow-hidden flex flex-col group">
+                      
+                      {/* 🚨 THE SLEEK IMAGE PLACEHOLDER ARCHITECTURE */}
+                      <div className={`h-48 w-full relative flex items-center justify-center transition-colors ${
+                        isRequest ? 'bg-orange-50/40 group-hover:bg-orange-50/80' : 
+                        isService ? 'bg-indigo-50/40 group-hover:bg-indigo-50/80' : 
+                        'bg-slate-50 group-hover:bg-slate-100/60'
+                      }`}>
+                        {product.image_url ? (
+                          <img src={product.image_url} alt={product.title} className="absolute inset-0 w-full h-full object-cover" />
+                        ) : (
+                          <div className="flex flex-col items-center justify-center text-center opacity-70 transition-transform group-hover:scale-105 duration-500">
+                            {isRequest && (
+                              <>
+                                <svg className="w-10 h-10 text-orange-400 mb-2.5 drop-shadow-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                                <span className="text-[9px] font-black text-orange-500 uppercase tracking-[0.25em]">In Search Of</span>
+                              </>
+                            )}
+                            {isService && (
+                              <>
+                                <svg className="w-10 h-10 text-indigo-400 mb-2.5 drop-shadow-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+                                <span className="text-[9px] font-black text-indigo-500 uppercase tracking-[0.25em]">Service Offered</span>
+                              </>
+                            )}
+                            {isProduct && (
+                              <>
+                                <svg className="w-10 h-10 text-slate-400 mb-2.5 drop-shadow-sm" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" /></svg>
+                                <span className="text-[9px] font-black text-slate-500 uppercase tracking-[0.25em]">Item For Sale</span>
+                              </>
+                            )}
+                          </div>
+                        )}
+
+                        {/* TINTED PRICE BADGE */}
+                        <div className={`absolute top-3 right-3 backdrop-blur-md px-3 py-1 rounded-full text-sm font-bold shadow-sm border ${
+                          isRequest ? 'bg-orange-100/90 text-orange-800 border-orange-200' : 
+                          isService ? 'bg-indigo-100/90 text-indigo-800 border-indigo-200' : 
+                          'bg-white/90 text-gray-900 border-gray-100'
+                        }`}>
+                          {isRequest ? `Budget: ₹${product.price}` : `₹${product.price}`}
                         </div>
-                      )}
-                      <div className="absolute top-3 right-3 bg-white/90 backdrop-blur-sm px-3 py-1 rounded-full text-sm font-bold text-gray-900 shadow-sm">
-                        ₹{product.price}
+                      </div>
+
+                      <div className="p-5 flex flex-col flex-grow">
+                        <div className="flex justify-between items-start gap-2">
+                          <h3 className="text-lg font-bold text-gray-900 line-clamp-1">{product.title}</h3>
+                          {/* TINTED CATEGORY PILL */}
+                          <span className={`text-[9px] font-black px-2 py-1 rounded-md uppercase tracking-wider shrink-0 border ${
+                            isRequest ? 'bg-orange-50 text-orange-600 border-orange-100' : 
+                            isService ? 'bg-indigo-50 text-indigo-600 border-indigo-100' : 
+                            'bg-slate-50 text-slate-500 border-slate-200'
+                          }`}>
+                            {product.category || 'misc'}
+                          </span>
+                        </div>
+                        
+                        <ExpandableDescription text={product.description} />
+
+                        <div className="mt-6 pt-4 border-t border-gray-50 flex items-center justify-between">
+                          <div>
+                            <span className="text-xs font-medium text-gray-400 block">{product.seller_name || 'Campus Member'}</span>
+                            {profile && profile.uid !== (product.owner_id || product.seller_id) && (
+                              <button 
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  setReportingListing({ id: product.id.toString(), title: product.title });
+                                }}
+                                className="text-[10px] text-red-400 hover:text-red-600 font-bold mt-1 uppercase tracking-wider transition-colors"
+                              >
+                                🚩 Report
+                              </button>
+                            )}
+                          </div>
+                          <button onClick={(e) => handleMessageSeller(e, product)} className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-semibold hover:bg-blue-100 transition-colors">
+                            {isRequest ? 'Contact' : 'Message'}
+                          </button>
+                        </div>
                       </div>
                     </div>
-                    <div className="p-5 flex flex-col flex-grow">
-                      <div className="flex justify-between items-start gap-2">
-                        <h3 className="text-lg font-bold text-gray-900 line-clamp-1">{product.title}</h3>
-                        <span className="text-[10px] font-bold px-2 py-1 bg-gray-100 text-gray-500 rounded-md uppercase tracking-wide">
-                          {product.category || 'misc'}
-                        </span>
-                      </div>
-                      <p className="text-sm text-gray-500 mt-2 line-clamp-2 flex-grow">{product.description}</p>
-                      <div className="mt-6 pt-4 border-t border-gray-50 flex items-center justify-between">
-                        <div>
-                          <span className="text-xs font-medium text-gray-400 block">{product.seller_name || 'Campus Member'}</span>
-                          {profile && profile.uid !== (product.owner_id || product.seller_id) && (
-                            <button 
-                              onClick={(e) => {
-                                e.preventDefault();
-                                e.stopPropagation();
-                                setReportingListing({ id: product.id.toString(), title: product.title });
-                              }}
-                              className="text-[10px] text-red-500 hover:text-red-700 font-bold mt-1 uppercase tracking-wider transition-colors"
-                            >
-                              🚩 Report
-                            </button>
-                          )}
-                        </div>
-                        <button onClick={(e) => handleMessageSeller(e, product)} className="px-4 py-2 bg-blue-50 text-blue-600 rounded-lg text-sm font-semibold hover:bg-blue-100 transition-colors">
-                          Message
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
-              {/* 🌟 THE LOAD MORE BUTTON (Only visible to logged-in users to prevent teaser bypass) */}
+              {/* 🚨 THE PERFECT PAGINATION BUTTON */}
               {profile && nextCursor && (
                 <div className="flex justify-center pt-8 pb-4">
                   <button

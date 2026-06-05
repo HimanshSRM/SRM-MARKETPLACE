@@ -22,7 +22,7 @@ export default function SupportPage() {
     if (isAuthLoading) return;
 
     const loadTickets = async () => {
-      if (!profile) {
+      if (!profile) { 
         setIsLoading(false);
         return;
       }
@@ -50,7 +50,8 @@ export default function SupportPage() {
       const response = await createSupportTicket({ subject, message });
       
       setIsModalOpen(false);
-      router.push(`/chat/${response.ticket_id}`);
+      // 🚨 THE FIX: Navigate to the chat_room_id, falling back to ticket_id just in case
+      router.push(`/chat/${response.chat_room_id || response.ticket_id}`);
       
     } catch (error: any) {
       alert(error.message || "Failed to submit ticket.");
@@ -141,7 +142,7 @@ export default function SupportPage() {
           </button>
         </div>
 
-        {/* TICKET LIST - NOW USING FLOATING CARDS */}
+        {/* TICKET LIST */}
         <div>
           {tickets.length === 0 ? (
             <div className="bg-white p-12 text-center rounded-2xl shadow-sm border border-gray-200">
@@ -150,12 +151,11 @@ export default function SupportPage() {
               <p className="text-gray-500 text-sm mt-1">You don't have any open issues or appeals right now.</p>
             </div>
           ) : (
-            <div className="space-y-4"> {/* 🚨 Changed from divide-y to space-y-4 for floating cards */}
+            <div className="space-y-4">
               {tickets.map((ticket) => (
                 <div 
                   key={ticket.id} 
                   onClick={() => router.push(`/chat/${ticket.chat_room_id || ticket.id}`)}
-                  // 🚨 The Floating Card styling applied here:
                   className="bg-white p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center cursor-pointer transition-shadow hover:shadow-md group"
                 >
                   <div className="flex-1 w-full">

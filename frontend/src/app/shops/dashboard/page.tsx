@@ -18,7 +18,8 @@ import Link from 'next/link';
 // ==========================================
 // THE EDIT SHOP MODAL COMPONENT
 // ==========================================
-function EditShopModal({ currentShop, onClose, onRefresh }: { currentShop: any, onClose: () => void, onRefresh: () => void }) {
+// 🚨 THE FIX: Swapped onRefresh for an onSuccess callback to pass data immediately
+function EditShopModal({ currentShop, onClose, onSuccess }: { currentShop: any, onClose: () => void, onSuccess: (data: any) => void }) {
   const [formData, setFormData] = useState({
     shop_name: currentShop?.shop_name || currentShop?.name || '',
     tagline: currentShop?.tagline || currentShop?.description || '', 
@@ -31,9 +32,18 @@ function EditShopModal({ currentShop, onClose, onRefresh }: { currentShop: any, 
     e.preventDefault();
     setIsSaving(true);
     try {
-      await updateShopProfile(currentShop.id, formData);
+      const updatePayload = {
+        shop_name: formData.shop_name,
+        description: formData.tagline, 
+        location: formData.block,      
+        contact_number: formData.contact_number
+      };
+
+      await updateShopProfile(currentShop.id, updatePayload);
+      
+      // 🚨 THE FIX: Pass the new data directly to the parent instantly
+      onSuccess(updatePayload);
       alert("Shop profile updated successfully! 🎉");
-      onRefresh(); 
       onClose();   
     } catch (error: any) {
       alert(error.message || "Failed to save changes.");
@@ -43,7 +53,6 @@ function EditShopModal({ currentShop, onClose, onRefresh }: { currentShop: any, 
   };
 
   return (
-    // 🚨 RESPONSIVE FIX: Added max-h-[90vh] and overflow-y-auto for mobile keyboards
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-3xl w-full max-w-md p-6 shadow-2xl animate-fade-in-up max-h-[90vh] overflow-y-auto">
         <h2 className="text-2xl font-black text-gray-900 mb-6">Edit Shop Profile</h2>
@@ -202,36 +211,58 @@ export default function ShopDashboardPage() {
         <div className="bg-white p-8 rounded-3xl shadow-sm border border-gray-100 max-w-md text-center">
           <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4 text-2xl">🏪</div>
           <h2 className="text-2xl font-bold text-gray-900">No Shop Found</h2>
-          <button onClick={() => router.push('/shop-application')} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl mt-4">Register a Shop</button>
+          <button onClick={() => router.push('/shops/register')} className="w-full py-3 bg-blue-600 text-white font-bold rounded-xl mt-4">Register a Shop</button>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 sm:p-8 relative">
-      {isEditModalOpen && <EditShopModal currentShop={myShop} onClose={() => setIsEditModalOpen(false)} onRefresh={loadDashboardData} />}
+    <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
+      {/* 🚨 THE FIX: Handled the onSuccess callback to instantly overwrite the local myShop data */}
+      {isEditModalOpen && (
+        <EditShopModal 
+          currentShop={myShop} 
+          onClose={() => setIsEditModalOpen(false)} 
+          onSuccess={(newData) => setMyShop((prev: any) => ({ ...prev, ...newData }))} 
+        />
+      )}
 
       <div className="max-w-7xl mx-auto space-y-6">
         
-        {/* 🚨 RESPONSIVE FIX: HEADER */}
-        <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 flex flex-col md:flex-row items-start md:items-center justify-between gap-6">
-          <div className="w-full">
-            <h1 className="text-3xl font-black text-gray-900 tracking-tight break-words">{myShop.shop_name}</h1>
-            <div className="flex flex-wrap gap-3 mt-3">
-              <button onClick={() => setIsEditModalOpen(true)} className="flex-1 sm:flex-none text-center text-xs px-4 py-2.5 bg-gray-100 hover:bg-gray-200 font-bold rounded-xl transition">⚙️ Edit Details</button>
-              <Link href={`/shops/${myShop.id}`} className="flex-1 sm:flex-none text-center text-xs px-4 py-2.5 bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold rounded-xl transition">👀 Public Page</Link>
+        <div className="bg-white p-6 sm:p-8 rounded-3xl shadow-sm border border-gray-100">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+            
+            <div className="flex-1 min-w-0 w-full">
+              <h1 className="text-2xl sm:text-3xl font-black text-gray-900 tracking-tight truncate">
+                {myShop.shop_name}
+              </h1>
+              <div className="flex flex-wrap gap-2 mt-3">
+                <button onClick={() => setIsEditModalOpen(true)} className="text-xs px-4 py-2.5 bg-gray-100 hover:bg-gray-200 font-bold rounded-xl transition">
+                  ⚙️ Edit Details
+                </button>
+                <Link href={`/shops/${myShop.id}`} className="text-xs px-4 py-2.5 bg-blue-50 text-blue-700 hover:bg-blue-100 font-bold rounded-xl transition">
+                  👀 Public Page
+                </Link>
+              </div>
             </div>
-          </div>
-          
-          <div className="w-full md:w-auto flex items-center justify-between gap-4 bg-gray-50 p-3 pl-5 rounded-2xl border border-gray-200">
-            <div><p className="text-sm font-bold text-gray-900">Accepting Inquiries</p></div>
-            <button onClick={handleToggleStatus} className={`relative h-8 w-14 rounded-full transition-colors shrink-0 ${isOpen ? 'bg-green-500' : 'bg-gray-300'}`}><span className={`inline-block h-6 w-6 rounded-full bg-white transition-transform ${isOpen ? 'translate-x-7' : 'translate-x-1'}`} /></button>
+            
+            {/* 🚨 THE FIX: Fully responsive box with a structurally locked inline-flex button */}
+            <div className="flex items-center justify-between w-full sm:w-auto gap-4 bg-gray-50 p-3 px-5 rounded-2xl border border-gray-200 shrink-0">
+              <p className="text-sm font-bold text-gray-900 whitespace-nowrap">Accepting Inquiries</p>
+              <button 
+                onClick={handleToggleStatus} 
+                className={`relative inline-flex h-8 w-14 shrink-0 cursor-pointer items-center rounded-full transition-colors duration-200 ease-in-out focus:outline-none ${isOpen ? 'bg-green-500' : 'bg-gray-300'}`}
+              >
+                <span className={`pointer-events-none inline-block h-6 w-6 transform rounded-full bg-white shadow-md transition duration-200 ease-in-out ${isOpen ? 'translate-x-7' : 'translate-x-1'}`} />
+              </button>
+            </div>
+
           </div>
         </div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="lg:col-span-1 space-y-6">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          <div className="xl:col-span-1 space-y-6">
             
             {/* NOTICE BOARD */}
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100">
@@ -311,7 +342,7 @@ export default function ShopDashboardPage() {
 
           </div>
 
-          <div className="lg:col-span-2">
+          <div className="xl:col-span-2">
             <div className="bg-white p-6 rounded-3xl shadow-sm border border-gray-100 h-full">
               <div className="flex justify-between mb-6"><h2 className="text-xl font-black text-gray-900">Live Inventory</h2></div>
               
@@ -324,7 +355,7 @@ export default function ShopDashboardPage() {
                     </div>
                     <p className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">{item.category}</p>
                     
-                    {/* 🚨 RESPONSIVE FIX: Action buttons now wrap nicely on small screens */}
+                    {/* Action buttons wrap nicely on small screens */}
                     <div className="mt-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                       <span className={`text-[10px] self-start font-black uppercase px-2.5 py-1 rounded-md ${item.in_stock ?? item.is_available ?? true ? 'bg-green-50 text-green-600' : 'bg-red-50 text-red-600'}`}>
                         {item.in_stock ?? item.is_available ?? true ? 'In Stock' : 'Out of Stock'}
@@ -337,6 +368,12 @@ export default function ShopDashboardPage() {
                     </div>
                   </div>
                 ))}
+                
+                {catalog.length === 0 && (
+                   <div className="col-span-1 sm:col-span-2 text-center py-10">
+                     <p className="text-gray-400 font-medium">Your inventory is empty. Add items using the form.</p>
+                   </div>
+                )}
               </div>
             </div>
           </div>

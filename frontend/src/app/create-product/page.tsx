@@ -43,6 +43,7 @@ export default function CreateProductPage() {
     price: '',
     type: 'product' as ListingType,
     category: 'books', 
+    condition: 'Gently Used', // 🚨 Added condition state for physical products
   });
 
   // Redirect guests instantly
@@ -72,7 +73,7 @@ export default function CreateProductPage() {
     setIsSubmitting(true);
 
     try {
-      const payload: CreateProductPayload = {
+      const payload: CreateProductPayload & { condition?: string } = {
         title: formData.title,
         description: formData.description,
         price: parseFloat(formData.price),
@@ -80,7 +81,11 @@ export default function CreateProductPage() {
         category: formData.category, 
       };
 
-      // 🚨 CLEANUP: API Wrapper handles auth automatically!
+      // Only attach condition if it's a physical product
+      if (formData.type === 'product') {
+        payload.condition = formData.condition;
+      }
+
       await createProduct(payload);
       router.push('/'); 
     } catch (err: any) {
@@ -90,7 +95,7 @@ export default function CreateProductPage() {
     }
   };
 
-  // 🚨 1. Wait for Firebase to check the browser memory
+  // 1. Wait for Firebase to check the browser memory
   if (isAuthLoading) {
     return (
       <div className="min-h-screen bg-gray-50 flex flex-col items-center justify-center">
@@ -99,7 +104,7 @@ export default function CreateProductPage() {
     );
   }
 
-  // 🚨 2. Now it is safe to check if they are a guest or logged out
+  // 2. Now it is safe to check if they are a guest or logged out
   if (!profile || profile.role === 'guest') {
     return null; 
   }
@@ -127,7 +132,7 @@ export default function CreateProductPage() {
               <label htmlFor="title" className="block text-sm font-semibold text-gray-900 mb-2">
                 {formData.type === 'product' ? 'What are you selling?' : formData.type === 'service' ? 'What service are you offering?' : 'What are you looking for?'}
               </label>
-              <input type="text" id="title" name="title" required placeholder={formData.type === 'product' ? "e.g., Used Engineering Textbook" : "e.g., Math Tutoring for Freshmen"} className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" value={formData.title} onChange={handleChange} />
+              <input type="text" id="title" name="title" required placeholder={formData.type === 'product' ? "e.g., Used Engineering Textbook" : formData.type === 'service' ? "e.g., Math Tutoring for Freshmen" : "e.g., Need a roommate for next semester"} className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" value={formData.title} onChange={handleChange} />
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -136,7 +141,7 @@ export default function CreateProductPage() {
                 <select id="type" name="type" required className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white" value={formData.type} onChange={handleChange}>
                   <option value="product">Physical Product</option>
                   <option value="service">Service (e.g., Tutoring)</option>
-                  <option value="request">Looking to Buy</option>
+                  <option value="request">Looking to Buy / Request</option>
                 </select>
               </div>
 
@@ -150,19 +155,47 @@ export default function CreateProductPage() {
               </div>
             </div>
 
-            <div>
-              <label htmlFor="price" className="block text-sm font-semibold text-gray-900 mb-2">
-                {formData.type === 'request' ? 'Budget (₹)' : 'Price (₹)'}
-              </label>
-              <div className="relative">
-                <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">₹</span>
-                <input type="number" id="price" name="price" required min="0" step="1" placeholder="0" className="w-full pl-8 pr-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" value={formData.price} onChange={handleChange} />
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+              <div>
+                <label htmlFor="price" className="block text-sm font-semibold text-gray-900 mb-2">
+                  {formData.type === 'request' ? 'Maximum Budget (₹)' : 'Price (₹)'}
+                </label>
+                <div className="relative">
+                  <span className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-500 font-medium">₹</span>
+                  <input type="number" id="price" name="price" required min="0" step="1" placeholder="0" className="w-full pl-8 pr-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all" value={formData.price} onChange={handleChange} />
+                </div>
               </div>
+
+              {/* 🚨 Condition is ONLY visible for physical products */}
+              {formData.type === 'product' && (
+                <div>
+                  <label htmlFor="condition" className="block text-sm font-semibold text-gray-900 mb-2">Item Condition</label>
+                  <select id="condition" name="condition" required className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all bg-white" value={formData.condition} onChange={handleChange}>
+                    <option value="New">New</option>
+                    <option value="Like New">Like New</option>
+                    <option value="Gently Used">Gently Used</option>
+                    <option value="Heavily Used">Heavily Used</option>
+                  </select>
+                </div>
+              )}
             </div>
 
             <div>
               <label htmlFor="description" className="block text-sm font-semibold text-gray-900 mb-2">Description</label>
-              <textarea id="description" name="description" required rows={4} placeholder="Describe the details, condition, and any other relevant info..." className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all resize-none" value={formData.description} onChange={handleChange} />
+              <textarea 
+                id="description" 
+                name="description" 
+                required 
+                rows={4} 
+                placeholder={
+                  formData.type === 'request' 
+                    ? "e.g., Looking for a flatmate in pocket-A or buying a second-hand cycle immediately..." 
+                    : "Describe the details, condition, and any other relevant info..."
+                } 
+                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all resize-none" 
+                value={formData.description} 
+                onChange={handleChange} 
+              />
             </div>
 
             <div className="pt-4">

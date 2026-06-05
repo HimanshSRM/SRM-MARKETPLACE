@@ -3,13 +3,19 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import { getStudentDashboard, deleteMyListing, updateStudentContact } from '@/lib/api';
+import { 
+  getStudentDashboard, 
+  deleteMyListing, 
+  updateStudentContact, 
+  toggleListingVisibility 
+} from '@/lib/api';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 import EditListingModal from '../../components/EditListingModal';
 
 export default function StudentDashboardPage() {
-  const { profile, isLoading: isAuthLoading } = useAuth();
+  // 🚨 THE FIX: Grabbed setProfile from context to forcefully update local memory
+  const { profile, setProfile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
   const [dashboardData, setDashboardData] = useState<any>(null);
@@ -62,6 +68,10 @@ export default function StudentDashboardPage() {
     setIsSavingDefaults(true);
     try {
       await updateStudentContact({ phone: phoneInput, upi_id: upiInput });
+      
+      // 🚨 THE FIX: Instantly overwrite React's local memory so it updates everywhere without a refresh!
+      setProfile((prev: any) => prev ? { ...prev, phone: phoneInput, upi_id: upiInput } : null);
+      
       toast.success("Default settings saved successfully!");
     } catch (error: any) {
       toast.error(error.message || "Failed to save settings.");
@@ -78,6 +88,26 @@ export default function StudentDashboardPage() {
       toast.success("Listing deleted successfully.");
     } catch (error: any) {
       toast.error("Failed to delete listing.");
+      console.error(error);
+    }
+  };
+
+  const handleToggleVisibility = async (listingId: string, currentStatus: string) => {
+    const willBeActive = currentStatus !== 'active';
+    try {
+      await toggleListingVisibility(listingId, willBeActive);
+      
+      // Optimistic UI Update
+      setMyListings((prevListings) => 
+        prevListings.map(item => 
+          item.id === listingId 
+            ? { ...item, status: willBeActive ? 'active' : 'hidden' } 
+            : item
+        )
+      );
+      toast.success(`Listing is now ${willBeActive ? 'Live' : 'Hidden'}.`);
+    } catch (error: any) {
+      toast.error(error.message || "Failed to change listing status.");
       console.error(error);
     }
   };
@@ -107,7 +137,7 @@ export default function StudentDashboardPage() {
     <div className="min-h-screen bg-gray-50 p-4 sm:p-8">
       <div className="max-w-4xl mx-auto space-y-8">
         
-        {/* 🚨 THE RESPONSIVE FIX: Profile Header Center Stack */}
+        {/* Profile Header Center Stack */}
         <div className="bg-white p-6 sm:p-8 rounded-3xl border border-gray-100 shadow-sm flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-4 sm:gap-6 transition-all">
           <div className="w-20 h-20 bg-blue-600 text-white rounded-full flex items-center justify-center text-4xl font-black shadow-md shrink-0">
             {profile?.email?.charAt(0).toUpperCase()}
@@ -167,7 +197,6 @@ export default function StudentDashboardPage() {
 
         {/* My Listings Section */}
         <div>
-          {/* 🚨 TWEAK: Added flex-wrap here so the button doesn't squish on tiny screens */}
           <div className="flex flex-wrap gap-4 justify-between items-center mb-6 px-1">
             <h2 className="text-2xl font-bold text-gray-900">My Listings</h2>
             <Link href="/create-product" className="px-5 py-2.5 bg-gray-900 text-white font-bold text-sm rounded-xl hover:bg-gray-800 transition shadow-sm whitespace-nowrap">
@@ -185,13 +214,13 @@ export default function StudentDashboardPage() {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
               {myListings.map((listing: any) => (
-                <div key={listing.id} className={`bg-white rounded-2xl border shadow-sm flex flex-col overflow-hidden relative transition-all ${listing.status === 'hidden' ? 'border-orange-400 ring-2 ring-orange-100' : 'border-gray-100'}`}>
+                <div key={listing.id} className={`bg-white rounded-2xl border shadow-sm flex flex-col overflow-hidden relative transition-all ${listing.status === 'hidden' ? 'border-orange-400 ring-2 ring-orange-100' : listing.status === 'suspended' ? 'border-red-400 ring-2 ring-red-100' : 'border-gray-100'}`}>
                   
-                  <div className="h-40 w-full bg-gray-100 relative group">
+                  <div className={`h-40 w-full relative group ${listing.status === 'suspended' || listing.status === 'sold' ? 'grayscale opacity-75' : 'bg-gray-100'}`}>
                     {listing.image_url ? (
                       <img src={listing.image_url} alt={listing.title} className="w-full h-full object-cover" />
                     ) : (
-                      <div className="w-full h-full flex items-center justify-center text-gray-400">
+                      <div className="w-full h-full flex items-center justify-center text-gray-400 bg-gray-100">
                         <svg className="w-8 h-8 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                       </div>
                     )}
@@ -201,9 +230,17 @@ export default function StudentDashboardPage() {
                     <h3 className="font-bold text-gray-900 text-lg line-clamp-1">{listing.title}</h3>
                     <p className="text-sm font-black text-green-600 mt-1">₹{listing.price}</p>
                     
-                    {listing.status === 'hidden' ? (
-                      <div className="mt-3 text-[10px] font-black uppercase tracking-wider text-orange-700 bg-orange-100 px-3 py-1.5 rounded-lg inline-block self-start border border-orange-200">
-                        ⚠️ Hidden By Admin
+                    {listing.status === 'suspended' ? (
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-wider text-red-700 bg-red-50 px-3 py-1.5 rounded-lg inline-block self-start border border-red-200">
+                        🚨 Suspended By Admin
+                      </div>
+                    ) : listing.status === 'sold' ? (
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-wider text-gray-700 bg-gray-100 px-3 py-1.5 rounded-lg inline-block self-start border border-gray-200">
+                        🤝 Sold
+                      </div>
+                    ) : listing.status === 'hidden' ? (
+                      <div className="mt-3 text-[10px] font-black uppercase tracking-wider text-orange-700 bg-orange-50 px-3 py-1.5 rounded-lg inline-block self-start border border-orange-200">
+                        ⏸️ Hidden (Paused)
                       </div>
                     ) : (
                       <div className="mt-3 text-[10px] font-black uppercase tracking-wider text-blue-700 bg-blue-50 px-3 py-1.5 rounded-lg inline-block self-start border border-blue-100">
@@ -211,20 +248,37 @@ export default function StudentDashboardPage() {
                       </div>
                     )}
                     
-                    <div className="mt-auto pt-5 flex gap-2">
-                      <button 
-                        onClick={() => setEditingListing(listing)}
-                        className="flex-1 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 font-bold text-xs rounded-xl transition"
-                      >
-                        ✏️ Edit
-                      </button>
-                      <button 
-                        onClick={() => handleDelete(listing.id)}
-                        className="flex-1 py-2 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-xl transition border border-red-100"
-                      >
-                        🗑️ Delete
-                      </button>
+                    <div className="mt-auto pt-4 flex flex-col gap-2">
+                      {listing.status !== 'suspended' && listing.status !== 'sold' && (
+                        <button 
+                          onClick={() => handleToggleVisibility(listing.id, listing.status)}
+                          className={`w-full py-2 font-bold text-xs rounded-xl transition ${
+                            listing.status === 'active' 
+                              ? 'bg-orange-50 text-orange-600 hover:bg-orange-100 border border-orange-100' 
+                              : 'bg-green-50 text-green-600 hover:bg-green-100 border border-green-100'
+                          }`}
+                        >
+                          {listing.status === 'active' ? '⏸️ Pause / Hide Listing' : '▶️ Make Live on Feed'}
+                        </button>
+                      )}
+
+                      <div className="flex gap-2">
+                        <button 
+                          onClick={() => setEditingListing(listing)}
+                          disabled={listing.status === 'suspended'}
+                          className="flex-1 py-2 bg-gray-100 text-gray-700 hover:bg-gray-200 font-bold text-xs rounded-xl transition disabled:opacity-50"
+                        >
+                          ✏️ Edit
+                        </button>
+                        <button 
+                          onClick={() => handleDelete(listing.id)}
+                          className="flex-1 py-2 bg-red-50 text-red-600 hover:bg-red-100 font-bold text-xs rounded-xl transition border border-red-100"
+                        >
+                          🗑️ Delete
+                        </button>
+                      </div>
                     </div>
+
                   </div>
                 </div>
               ))}

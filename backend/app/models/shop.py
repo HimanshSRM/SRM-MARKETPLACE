@@ -7,6 +7,7 @@ class ShopCreate(BaseModel):
     description: str = Field(..., max_length=500)
     location: str = Field(..., example="Tech Park, Potheri, Estancia")
     contact_number: str
+    phone_number: Optional[str] = None
     contact_email: EmailStr
 
 # 2. When a business adds a permanent item to their menu/catalog
@@ -27,6 +28,7 @@ class CatalogItemUpdate(BaseModel):
 class ShopProfileUpdate(BaseModel):
     shop_name: Optional[str] = None
     description: Optional[str] = None
+    contact_number: Optional[str] = None
     phone_number: Optional[str] = None
     location: Optional[str] = None # e.g., "Tech Park", "Main Campus"
 
