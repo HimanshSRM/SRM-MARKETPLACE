@@ -171,18 +171,31 @@ async def moderate_user(
 
         # 1. APPLY ACTION TO AUTH, PROFILE, AND LISTINGS
         if payload.action == "ban":
-            user_ref.update({"status": "banned", "role": "banned","banned_at": firestore.SERVER_TIMESTAMP})
+            user_ref.update({"status": "banned", "role": "banned", "banned_at": firestore.SERVER_TIMESTAMP})
+            
+            # 🚨 BUG 1 FIX: Suspend the User's Shop Document
+            shop_doc = db.collection("shops").document(uid).get()
+            if shop_doc.exists:
+                batch.update(shop_doc.reference, {"status": "suspended"})
+            
+            # 🚨 BUG 2 FIX: Save the exact state to memory before suspending
             for doc_id, doc in all_user_listings.items():
-                batch.update(doc.reference, {"status": "suspended"})
+                current_status = doc.to_dict().get("status", "active")
+                batch.update(doc.reference, {
+                    "status": "suspended",
+                    "pre_ban_status": current_status
+                })
                 
         elif payload.action == "restore":
             user_data = user_ref.get().to_dict() or {}
             has_verified_srm_email = "srm_email" in user_data
             restored_role = "student" if has_verified_srm_email else "guest"
             
+            # 🚨 BUG 1 FIX: Restore the Shop Document
             shop_doc = db.collection("shops").document(uid).get()
-            if shop_doc.exists and shop_doc.to_dict().get("status") == "approved":
+            if shop_doc.exists and shop_doc.to_dict().get("status") == "suspended":
                 restored_role = "shop_verified"
+                batch.update(shop_doc.reference, {"status": "approved"})
 
             user_ref.update({
                 "status": "active", 
@@ -190,9 +203,15 @@ async def moderate_user(
                 "banned_at": firestore.DELETE_FIELD
             })
             
+            # 🚨 BUG 2 FIX: Read the memory and restore exact state
             for doc_id, doc in all_user_listings.items():
-                if doc.to_dict().get("status") == "suspended":
-                    batch.update(doc.reference, {"status": "active"})
+                doc_data = doc.to_dict()
+                if doc_data.get("status") == "suspended":
+                    old_status = doc_data.get("pre_ban_status", "active")
+                    batch.update(doc.reference, {
+                        "status": old_status,
+                        "pre_ban_status": firestore.DELETE_FIELD
+                    })
                     
         elif payload.action == "nuke":
             try:

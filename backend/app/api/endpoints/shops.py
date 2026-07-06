@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timezone , timedelta
+from datetime import datetime, timezone, timedelta
 import uuid
 from google.cloud import firestore
 
@@ -9,13 +9,12 @@ from app.core.firebase import db
 from app.core.security import get_current_user, get_marketplace_user, get_active_user
 from app.models.shop import ShopCreate, CatalogItemCreate, ShopProfileUpdate
 from app.models.admin import ReportCreate
-from app.models.shop import ShopStatusUpdate , ShopNoticeUpdate , FlashDealCreate , QuickReplyUpdate
+from app.models.shop import ShopStatusUpdate, ShopNoticeUpdate, FlashDealCreate, QuickReplyUpdate
 
 router = APIRouter()
 
 # ==========================================
 # 1. PRIVATE ROUTES & DASHBOARD
-# (These MUST be at the top to avoid Wildcard collisions)
 # ==========================================
 
 @router.get("/me", tags=["Shops - Private"])
@@ -53,8 +52,6 @@ async def create_shop_profile(shop_data: ShopCreate, overwrite: bool = False, us
             if not overwrite:
                 return {"status": "exists", "shop_data": shop_doc.to_dict()}
             else:
-                # 🚨 THE FIX: Manually nuke the old catalog subcollection!
-                # Firestore does NOT delete subcollections when you overwrite a parent document.
                 catalog_docs = shop_ref.collection("catalog").stream()
                 batch = db.batch()
                 deleted_count = 0
@@ -62,7 +59,6 @@ async def create_shop_profile(shop_data: ShopCreate, overwrite: bool = False, us
                 for doc in catalog_docs:
                     batch.delete(doc.reference)
                     deleted_count += 1
-                    # Firestore batches hold max 500 operations. Safe for a shop catalog.
                     
                 if deleted_count > 0:
                     batch.commit()
@@ -86,7 +82,7 @@ async def create_shop_profile(shop_data: ShopCreate, overwrite: bool = False, us
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 🚨 THE FIX: Changed from @router.put to @router.post to finally clear the 405 Method Not Allowed error.
+
 @router.post("/restore", tags=["Shops - Private"])
 async def restore_shop_profile(user: dict = Depends(get_current_user)):
     """Reactivates a rejected shop and sends it back to the admin for review."""
@@ -111,17 +107,70 @@ async def restore_shop_profile(user: dict = Depends(get_current_user)):
 
 @router.put("/{shop_id}/profile", tags=["Shops - Private"])
 async def update_shop_profile(shop_id: str, payload: ShopProfileUpdate, user: dict = Depends(get_active_user)):
-    """Allows a verified shop owner to update their business details."""
-    if user.get("uid") != shop_id and user.get("role") != "admin":
+    """Allows a verified shop owner to update their business details and alerts Admin if restricted."""
+    uid = user.get("uid")
+    
+    if uid != shop_id and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Permission denied.")
+        
     try:
         shop_ref = db.collection("shops").document(shop_id)
+        shop_doc = shop_ref.get()
+        
+        if not shop_doc.exists:
+            raise HTTPException(status_code=404, detail="Shop not found.")
+            
+        shop_data = shop_doc.to_dict()
+        current_status = shop_data.get("status")
+            
         update_data = {k: v for k, v in payload.model_dump().items() if v is not None}
         if update_data:
             update_data["updated_at"] = firestore.SERVER_TIMESTAMP
             shop_ref.update(update_data)
+            
+        # 🚨 THE MODERATION LOOP: Alert Admin if editing a rejected or suspended shop profile
+        if current_status in ["rejected", "suspended"]:
+            # 🚨 THE INDEX FIX: Query by buyer_id only, filter the rest in Python to prevent crash
+            tickets = db.collection("chat_rooms").where("buyer_id", "==", uid).stream()
+                
+            latest_ticket = None
+            latest_time = None
+            
+            for t in tickets:
+                t_data = t.to_dict()
+                if t_data.get("is_ticket") == True and t_data.get("seller_id") == "ADMIN_TEAM":
+                    t_time = t_data.get("updated_at") or t_data.get("created_at")
+                    if not latest_time or (t_time and t_time > latest_time):
+                        latest_time = t_time
+                        latest_ticket = t
+                    
+            if latest_ticket:
+                room_ref = latest_ticket.reference
+                
+                # Pop the thread back into the Admin's "Needs Reply" inbox
+                room_ref.update({
+                    "status": "open",
+                    "last_message": "🔄 Shop Owner updated their business profile for review.",
+                    "updated_at": firestore.SERVER_TIMESTAMP,
+                    "last_sender_id": uid 
+                })
+                
+                # Drop an automated system alert inside the chat
+                room_ref.collection("messages").add({
+                    "sender_id": "ADMIN_SYSTEM",
+                    "text": "🔄 **SYSTEM ALERT:** The shop owner has updated their business profile details.\n\nPlease review the changes. If the shop now complies with campus guidelines, you can approve/restore their access.",
+                    "is_system_message": True,
+                    "is_bid": False,
+                    "timestamp": firestore.SERVER_TIMESTAMP,
+                    "created_at": firestore.SERVER_TIMESTAMP
+                })
+
         return {"message": "Shop profile updated successfully!"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+        
+    except HTTPException:
+        raise
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==========================================
@@ -140,13 +189,15 @@ async def add_catalog_item(item: CatalogItemCreate, user: dict = Depends(get_act
         catalog_ref = db.collection("shops").document(uid).collection("catalog").document()
         
         item_dict["id"] = catalog_ref.id
+        item_dict["status"] = "active"
         item_dict["created_at"] = firestore.SERVER_TIMESTAMP
         item_dict["updated_at"] = firestore.SERVER_TIMESTAMP
         
         catalog_ref.set(item_dict)
         
         return {"message": "Item added!", "item_id": catalog_ref.id}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/catalog/{item_id}", tags=["Shops - Private"])
 async def delete_catalog_item(item_id: str, user: dict = Depends(get_active_user)):
@@ -162,7 +213,8 @@ async def delete_catalog_item(item_id: str, user: dict = Depends(get_active_user
 
         item_ref.delete()
         return {"message": "Item deleted."}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/catalog/{item_id}", tags=["Shops - Private"])
@@ -171,29 +223,70 @@ async def update_catalog_item(
     request: Request, 
     user: dict = Depends(get_active_user)
 ):
+    """Updates a catalog item and alerts Admins if it was restricted."""
     try:
-        if user.get("role") != "shop_verified":
-            raise HTTPException(status_code=403, detail="Unauthorized.")
-
+        # 🚨 ROLE FIX: Removed the strict "shop_verified" block here.
+        # Suspended shops get downgraded to "guest", but they MUST be allowed to edit their own catalog.
+        
         payload = await request.json()
         uid = user.get("uid")
         
         item_ref = db.collection("shops").document(uid).collection("catalog").document(item_id)
+        item_doc = item_ref.get()
         
-        if not item_ref.get().exists:
+        if not item_doc.exists:
             raise HTTPException(status_code=404, detail="Item not found in catalog.")
             
-        payload.pop("id", None)
-        payload["updated_at"] = firestore.SERVER_TIMESTAMP
+        item_data = item_doc.to_dict()
+        current_status = item_data.get("status", "active")
         
-        item_ref.update(payload)
+        safe_update_data = {
+            k: v for k, v in payload.items() 
+            if k in ["title", "name", "description", "price", "category", "image_url", "in_stock", "is_available"]
+        }
         
+        if current_status in ["suspended", "hidden"]:
+            # If Admin hid it, the seller cannot force it back online
+            safe_update_data.pop("is_available", None)
+            safe_update_data.pop("status", None)
+        
+        db_payload = safe_update_data.copy()
+        db_payload["updated_at"] = firestore.SERVER_TIMESTAMP
+        
+        if db_payload:
+            item_ref.update(db_payload)
+            
+        # 🚨 THE MODERATION LOOP: Alert Admin if editing a restricted catalog item
+        if current_status in ["suspended", "hidden"]:
+            # 🚨 THE INDEX FIX: Query by listing_id only, filter the rest in Python to prevent crash
+            tickets = db.collection("chat_rooms").where("listing_id", "==", item_id).stream()
+
+            for t in tickets:
+                t_data = t.to_dict()
+                if t_data.get("is_ticket") == True and t_data.get("seller_id") == "ADMIN_TEAM":
+                    room_ref = t.reference
+                    room_ref.update({
+                        "status": "open",
+                        "last_message": "🔄 Shop Owner updated the restricted item for review.",
+                        "updated_at": firestore.SERVER_TIMESTAMP,
+                        "last_sender_id": uid 
+                    })
+                    room_ref.collection("messages").add({
+                        "sender_id": "ADMIN_SYSTEM",
+                        "text": "🔄 **SYSTEM ALERT:** The shop owner has edited the details of this restricted catalog item.\n\nPlease review. If it now complies with the rules, use the Quick Restore button.",
+                        "is_system_message": True,
+                        "is_bid": False,
+                        "timestamp": firestore.SERVER_TIMESTAMP,
+                        "created_at": firestore.SERVER_TIMESTAMP
+                    })
+                    break # Stop looping once the admin ticket is found
+
         return {"message": "Item updated successfully!"}
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail="Failed to update item in database")   
+        raise HTTPException(status_code=500, detail=str(e))   
 
 
 # ==========================================
@@ -254,12 +347,12 @@ async def trigger_flash_deal(deal: FlashDealCreate, request: Request, user: dict
             "/shops" 
         )
         return {"message": "Flash Deal Broadcasted & Live on Directory!"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==========================================
 # 4. PUBLIC ROUTES & TRUST & SAFETY
-# (Dynamic routes MUST be at the bottom)
 # ==========================================
 
 @router.post("/{shop_id}/catalog/{item_id}/report", tags=["Shops - Public", "Trust & Safety"])
@@ -277,13 +370,12 @@ async def report_shop_item(shop_id: str, item_id: str, payload: ReportCreate, us
         reported_by = item_data.get("reported_by", [])
         
         if uid in reported_by:
-            existing_tickets = db.collection("chat_rooms")\
-                .where("buyer_id", "==", uid)\
-                .where("listing_id", "==", item_id)\
-                .where("is_ticket", "==", True).limit(1).get()
+            # 🚨 THE INDEX FIX: Avoid crash on reporting
+            tickets_stream = db.collection("chat_rooms").where("listing_id", "==", item_id).stream()
+            existing_ticket = next((t for t in tickets_stream if t.to_dict().get("buyer_id") == uid and t.to_dict().get("is_ticket") == True), None)
                 
-            if existing_tickets:
-                doc_ref = existing_tickets[0].reference
+            if existing_ticket:
+                doc_ref = existing_ticket.reference
                 doc_ref.update({
                     "status": "open",
                     "updated_at": firestore.SERVER_TIMESTAMP,
@@ -308,6 +400,7 @@ async def report_shop_item(shop_id: str, item_id: str, payload: ReportCreate, us
         
         if new_report_count >= 3:
             update_payload["is_available"] = False 
+            update_payload["status"] = "hidden"
 
         item_ref.update(update_payload)
         
@@ -333,6 +426,7 @@ async def report_shop_item(shop_id: str, item_id: str, payload: ReportCreate, us
     except Exception as e: 
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.get("/live", tags=["Shops - Public"])
 async def get_all_verified_shops(user: dict = Depends(get_marketplace_user)): 
     try:
@@ -344,13 +438,20 @@ async def get_all_verified_shops(user: dict = Depends(get_marketplace_user)):
             shop_data["id"] = shop.id
             
             catalog_docs = shop.reference.collection("catalog").stream()
-            shop_data["catalog"] = [{"id": doc.id, **doc.to_dict()} for doc in catalog_docs]
             
+            filtered_catalog = []
+            for doc in catalog_docs:
+                doc_data = doc.to_dict()
+                if doc_data.get("status") not in ["hidden", "suspended"]:
+                    filtered_catalog.append({"id": doc.id, **doc_data})
+                    
+            shop_data["catalog"] = filtered_catalog
             shop_list.append(shop_data)
             
         return {"data": shop_list}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 # 🚨 THE WILDCARD ROUTE (Must be absolutely last!)
 @router.get("/{shop_id}", tags=["Shops - Public"])
@@ -364,7 +465,13 @@ async def get_single_shop(shop_id: str, user: dict = Depends(get_marketplace_use
         shop_data["id"] = shop_doc.id
         
         catalog_docs = shop_doc.reference.collection("catalog").stream()
-        shop_data["catalog"] = [{"id": doc.id, **doc.to_dict()} for doc in catalog_docs]
+        filtered_catalog = []
+        for doc in catalog_docs:
+            doc_data = doc.to_dict()
+            if doc_data.get("status") not in ["hidden", "suspended"]:
+                filtered_catalog.append({"id": doc.id, **doc_data})
+                
+        shop_data["catalog"] = filtered_catalog
         
         return {"data": shop_data}
     except HTTPException: raise
