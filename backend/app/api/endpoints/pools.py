@@ -20,6 +20,7 @@ class PoolCreate(BaseModel):
     expires_in_minutes: int
     upi_id: str                 # 🚨 REQUIRED for automatic split payments
     cart_link: str = ""         # 🚨 NEW: Optional Master Cart Link
+    special_instructions: str = ""
 
 class PoolItem(BaseModel):
     item_name: str
@@ -35,13 +36,14 @@ class PoolJoin(BaseModel):
 class PoolStatusUpdate(BaseModel):
     status: str 
     delivery_fee: float = 0.0   # Delivery fee to split among participants
+    eta_minutes: int = 0        # 🚨 NEW: Added for the Global Tracker Pill
 
 class ParticipantPriceUpdate(BaseModel):
     new_price: float
 
-# 🚨 NEW: Schema for Live Tracking
-class TrackingLinkUpdate(BaseModel):
-    tracking_url: str
+# 🚨 NEW: Schema for Live Instructions Board
+class HostInstructionsUpdate(BaseModel):
+    instructions: str
 
 
 # ==========================================
@@ -159,11 +161,13 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
             "host_id": current_user["uid"], "host_name": user_name, "app_name": pool_data.app_name,
             "pickup_location": pool_data.pickup_location, "contact_number": pool_data.contact_number,
             "upi_id": pool_data.upi_id,            
-            "cart_link": pool_data.cart_link,      
+            "cart_link": pool_data.cart_link, 
+            "special_instructions": pool_data.special_instructions,     
             "delivery_fee": 0.0,                   
             "status": "open", "expires_at": expires_at.isoformat(), "chat_room_id": chat_room_id,
             "participants": [], 
-            "participant_ids": [current_user["uid"]], 
+            "participant_ids": [current_user["uid"]],
+            "host_instructions": "", # 🚨 NEW: Field for broadcast updates
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         db.collection("group_orders").document(pool_id).set(new_pool)
@@ -321,7 +325,8 @@ async def update_pool_status(
 
         update_data = {
             "status": payload.status,
-            "delivery_fee": payload.delivery_fee
+            "delivery_fee": payload.delivery_fee,
+            "updated_at": firestore.SERVER_TIMESTAMP
         }
         
         # Send Automated Bot Message
@@ -335,6 +340,12 @@ async def update_pool_status(
             system_text = f"🔒 Order Locked! The Host is placing the order now.{fee_text}"
             push_title = f"🔒 {pool['app_name']} Pool Locked!"
             push_body = f"The host is checking out your cart items now.{fee_text}"
+            
+            # 🚨 THE ETA CALCULATION
+            if payload.eta_minutes > 0:
+                arrival_time = datetime.now(timezone.utc) + timedelta(minutes=payload.eta_minutes)
+                update_data["estimated_arrival_time"] = arrival_time.isoformat()
+                system_text += f"\n⏳ Estimated arrival in {payload.eta_minutes} minutes."
             
         elif payload.status == "delivered": 
             system_text = f"🛎️ ORDER ARRIVED! Meet at {pool['pickup_location']}."
@@ -376,14 +387,15 @@ async def update_pool_status(
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
-# 🚨 NEW: The LIVE TRACKING Update Route
-@router.put("/{pool_id}/tracking", tags=["Group Orders"])
-async def update_pool_tracking(
+# 🚨 NEW: The INSTRUCTIONS UPDATE Route (Replaces Tracking Route)
+@router.put("/{pool_id}/instructions", tags=["Group Orders"])
+async def update_host_instructions(
     pool_id: str, 
-    payload: TrackingLinkUpdate, 
+    payload: HostInstructionsUpdate, 
+    request: Request,
     current_user: dict = Depends(get_current_user)
 ):
-    """Allows the Host to optionally share a live tracking link."""
+    """Allows the Host to broadcast instructions/updates to all users globally."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
@@ -393,17 +405,17 @@ async def update_pool_tracking(
         pool = pool_doc.to_dict()
 
         if pool["host_id"] != current_user["uid"]:
-            raise HTTPException(status_code=403, detail="Only the Host can update the tracking link.")
+            raise HTTPException(status_code=403, detail="Only the Host can broadcast instructions.")
 
         # Update the database
         pool_ref.update({
-            "tracking_url": payload.tracking_url,
+            "host_instructions": payload.instructions,
             "updated_at": firestore.SERVER_TIMESTAMP
         })
 
         # Drop a notification in the group chat
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
-        msg = "📍 The Host has added a live tracking link for the delivery! Check your pool dashboard."
+        msg = f"📢 Host Update: {payload.instructions}"
         
         chat_ref.collection("messages").add({
             "sender_id": "system", 
@@ -413,7 +425,20 @@ async def update_pool_tracking(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        return {"message": "Tracking link broadcasted!"}
+        # 🚨 Send Push Notification to all joiners
+        participant_ids = pool.get("participant_ids", [])
+        if participant_ids:
+            for uid in participant_ids:
+                if uid != current_user["uid"]:
+                    await request.app.state.redis.enqueue_job(
+                        'process_push_notification',
+                        uid,
+                        f"📢 Update for {pool['app_name']} Pool",
+                        payload.instructions,
+                        f"/chat/{pool['chat_room_id']}"
+                    )
+
+        return {"message": "Instructions broadcasted successfully!"}
 
     except HTTPException:
         raise
@@ -480,6 +505,7 @@ async def update_participant_price(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.delete("/{pool_id}/participants/{user_id}")
 async def kick_participant(

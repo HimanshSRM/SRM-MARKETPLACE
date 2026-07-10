@@ -5,16 +5,38 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { createGroupOrder, joinGroupOrder, updateParticipantCart, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage, updateParticipantPrice, getPastPools, broadcastTrackingLink } from '@/lib/api';
+import { 
+  createGroupOrder, 
+  joinGroupOrder, 
+  updateParticipantCart, 
+  updateGroupOrderStatus, 
+  kickParticipant, 
+  settleGroupOrder, 
+  sendMessage, 
+  updateParticipantPrice, 
+  getPastPools, 
+  updateHostInstructions 
+} from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
 import GuestBlockerModal from '@/components/GuestBlockerModal'; 
+
+// --- MAGIC PASTE HELPER ---
+// Instantly strips out all junk text (like Blinkit's promotional message) and keeps only the URL
+const extractUrl = (text: string) => {
+  const urlRegex = /(https?:\/\/[^\s]+)/g;
+  const match = text.match(urlRegex);
+  return match ? match[0] : text;
+};
 
 // --- INTERFACES ---
 interface PoolItem { item_name: string; quantity: number; estimated_price: number; }
 interface Participant { user_id: string; user_name: string; contact_number: string; block?: string; cart_link?: string; items: PoolItem[]; total_estimated_price: number; } 
 interface GroupOrder {
   id: string; host_id: string; host_name: string; app_name: string; pickup_location: string; contact_number: string;
-  upi_id?: string; cart_link?: string; delivery_fee?: number; tracking_url?: string; // 🚨 ADDED TRACKING URL
+  upi_id?: string; cart_link?: string; delivery_fee?: number; 
+  special_instructions?: string; // 🚨 Added for initial order notes
+  host_instructions?: string;    // 🚨 For live broadcast updates
+  estimated_arrival_time?: string; 
   status: 'open' | 'locked' | 'delivered' | 'cancelled' | 'settled'; 
   expires_at: string; created_at: string; chat_room_id: string; participants: Participant[]; participant_ids: string[];
 }
@@ -253,7 +275,7 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
   
   const isPast = ['delivered', 'cancelled', 'settled'].includes(order.status);
   const isDiscover = !isHost && !hasJoined && order.status === 'open';
-  const isExpired = order.status !== 'open';
+  const isExpired = order.status !== 'open' && order.status !== 'locked';
 
   const formatOrderTime = (dateString: string) => {
     if (!dateString) return '';
@@ -276,37 +298,58 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
     leftBorder = 'border-l-[#FC8019]';
   }
 
+  // 🚨 REBUILT TIMER: Switches dynamically from Expires At -> Estimated Arrival Time
   useEffect(() => {
-    if (order.status !== 'open') { setTimeLeft('Locked'); return; }
+    if (order.status !== 'open' && order.status !== 'locked') {
+      setTimeLeft(order.status === 'delivered' ? 'Arrived!' : order.status);
+      return;
+    }
     
+    const targetTime = order.status === 'locked' && order.estimated_arrival_time 
+      ? order.estimated_arrival_time 
+      : order.expires_at;
+
     const interval = setInterval(() => {
-      const distance = new Date(order.expires_at).getTime() - new Date().getTime();
-      if (distance < 0) { clearInterval(interval); setTimeLeft('Time is up!'); } 
-      else {
+      // TypeScript Fix: Non-null assertion (!) ensures targetTime is passed correctly
+      const distance = new Date(targetTime!).getTime() - new Date().getTime();
+      
+      if (distance < 0) { 
+        clearInterval(interval); 
+        setTimeLeft(order.status === 'locked' ? 'Check with Host!' : 'Time is up!'); 
+      } else {
         const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
         const s = Math.floor((distance % (1000 * 60)) / 1000);
         setTimeLeft(`${m}m ${s}s`);
       }
     }, 1000);
+    
     return () => clearInterval(interval);
-  }, [order.expires_at, order.status]);
+  }, [order.expires_at, order.estimated_arrival_time, order.status]);
 
   const updateStatus = async (newStatus: 'locked' | 'delivered') => {
     let fee = order.delivery_fee || 0;
+    let eta = 0;
+    
     if (newStatus === 'locked') {
-      const input = window.prompt("What is the final Delivery + Surge fee? (We will split this evenly. Enter 0 if none)", "0");
-      if (input === null) return; 
-      fee = parseFloat(input) || 0;
+      const feeInput = window.prompt("What is the final Delivery + Surge fee? (Enter 0 if none)", "0");
+      if (feeInput === null) return; 
+      fee = parseFloat(feeInput) || 0;
+
+      // 🚨 ASK FOR THE ETA
+      const etaInput = window.prompt(`What is the App ETA in minutes? (e.g. 15)`, "15");
+      if (etaInput === null) return;
+      eta = parseInt(etaInput) || 15;
     }
+    
     try {
-      await updateGroupOrderStatus(order.id, newStatus, fee); 
+      await updateGroupOrderStatus(order.id, newStatus, fee, eta); 
     } catch (err) {
       console.error(err);
       alert("Failed to update order status");
     }
   };
 
-  let statusText = isExpired ? 'Locked' : timeLeft;
+  let statusText = timeLeft;
   if (order.status === 'delivered') statusText = 'Arrived!';
   if (order.status === 'cancelled') statusText = 'Cancelled';
   if (order.status === 'settled') statusText = 'Settled';
@@ -358,14 +401,24 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
           ) : (
             <p className="text-xs text-gray-500 font-medium mt-2">📍 Meet at: {order.pickup_location}</p>
           )}
+
+          {/* 🚨 THE NEW SPECIAL INSTRUCTIONS BLOCK */}
+          {order.special_instructions && (
+            <div className="mt-2.5 bg-gray-50 border border-gray-100 p-2.5 rounded-xl inline-block max-w-[280px] sm:max-w-sm">
+              <p className="text-xs text-gray-600 leading-snug">
+                <span className="font-bold text-gray-800">📝 Note:</span> {order.special_instructions}
+              </p>
+            </div>
+          )}
+
         </div>
 
         <div className={`text-right ${isPast ? 'text-gray-400' : (isExpired ? 'text-red-500' : 'text-blue-600')}`}>
           <span className="block text-[10px] font-bold uppercase tracking-wider text-gray-400">
-            {isPast ? 'Status' : 'Ordering In'}
+            {isPast ? 'Status' : (order.status === 'locked' ? 'ETA' : 'Ordering In')}
           </span>
-          <span className={`text-xl font-black tabular-nums ${order.status === 'delivered' ? 'text-green-600' : ''}`}>
-            {statusText}
+          <span className={`text-xl font-black tabular-nums ${order.status === 'delivered' ? 'text-green-600' : ''} ${timeLeft === 'Check with Host!' ? 'text-orange-500 text-sm animate-pulse' : ''}`}>
+            {timeLeft === 'Check with Host!' ? '📍 Should be here!' : statusText}
           </span>
         </div>
       </div>
@@ -377,24 +430,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
             <span className={`font-black block text-sm ${isPast ? 'text-gray-700' : 'text-purple-900'}`}>Your Split: +₹{Math.ceil(order.delivery_fee / (order.participants.length + 1))}</span>
           </div>
           <span className={`${isPast ? 'bg-gray-200 text-gray-600' : 'bg-purple-200 text-purple-800'} px-2 py-1 rounded-lg font-black text-[10px] uppercase tracking-wider`}>Fee Split</span>
-        </div>
-      )}
-
-      {/* 🚨 THE LIVE TRACKING BUTTON */}
-      {order.tracking_url && !isPast && (
-        <div className="mt-3 mb-1">
-          <a 
-            href={order.tracking_url} 
-            target="_blank" 
-            rel="noopener noreferrer"
-            className="w-full bg-gray-900 text-white py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-black transition shadow-sm text-sm"
-          >
-            <span className="relative flex h-2 w-2">
-              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
-            </span>
-            📍 Track Live Delivery
-          </a>
         </div>
       )}
 
@@ -442,7 +477,7 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
 }
 
 // ==========================================
-// 2. THE MANAGE ORDER MODAL (Host Edit Prices & Tracking)
+// 2. THE MANAGE ORDER MODAL (Host Edit Prices & Instructions)
 // ==========================================
 function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: GroupOrder, currentUser: any, onClose: () => void, onUpdate: () => void }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -576,26 +611,26 @@ function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: Gr
           </div>
         </div>
 
-        {/* 🚨 THE HOST TRACKING INPUT */}
+        {/* 🚨 THE NEW HOST INSTRUCTIONS INPUT */}
         {isHost && order.status === 'locked' && (
           <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-2xl animate-fade-in-up">
-            <h4 className="text-sm font-black text-blue-900 mb-1">📍 Share Live Tracking (Optional)</h4>
-            <p className="text-xs text-blue-700 mb-3 font-medium">If you ordered on an app, paste the tracking link here.</p>
+            <h4 className="text-sm font-black text-blue-900 mb-1">📢 Broadcast Update</h4>
+            <p className="text-xs text-blue-700 mb-3 font-medium">Update joiners on the order status (e.g., "Waiting at the gate").</p>
             <div className="flex gap-2">
               <input 
-                type="url" 
-                id="trackingInput"
-                defaultValue={order.tracking_url || ""}
-                placeholder="https://link.blinkit.com/..." 
+                type="text" 
+                id="instructionsInput"
+                defaultValue={order.host_instructions || ""}
+                placeholder="I am walking to the main gate..." 
                 className="flex-1 px-3 py-2 text-xs font-medium border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 shadow-inner"
               />
               <button 
                 onClick={async () => {
-                  const url = (document.getElementById('trackingInput') as HTMLInputElement).value;
-                  if (!url) return alert("Paste a valid link first!");
+                  const text = (document.getElementById('instructionsInput') as HTMLInputElement).value;
+                  if (!text) return alert("Type an instruction first!");
                   try {
                     setIsRefreshing(true);
-                    await broadcastTrackingLink(order.id, url);
+                    await updateHostInstructions(order.id, text);
                     onUpdate();
                   } catch(e: any) { alert(e.message); }
                   finally { setIsRefreshing(false); }
@@ -753,7 +788,8 @@ function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClo
     contact_number: '', 
     expires_in_minutes: 15, 
     upi_id: '',
-    cart_link: ''
+    cart_link: '',
+    special_instructions: '' // 🚨 NEW
   });
 
   useEffect(() => {
@@ -821,7 +857,31 @@ function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClo
             <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1 flex justify-between">
               <span>Master Cart Link</span> <span className="text-gray-400">Optional</span>
             </label>
-            <input type="url" value={formData.cart_link} onChange={e => setFormData({...formData, cart_link: e.target.value})} placeholder="Paste your Blinkit cart link..." className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" />
+            {/* 🚨 MAGIC PASTE APPLIED HERE */}
+            <input 
+              type="url" 
+              value={formData.cart_link} 
+              onChange={e => {
+                const extractedUrl = extractUrl(e.target.value);
+                setFormData({...formData, cart_link: extractedUrl});
+              }} 
+              placeholder="Paste your Blinkit cart link..." 
+              className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" 
+            />
+          </div>
+
+          {/* 🚨 THE NEW SPECIAL INSTRUCTIONS INPUT */}
+          <div>
+            <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1 flex justify-between">
+              <span>Special Instructions</span> <span className="text-gray-400">Optional</span>
+            </label>
+            <input 
+              type="text" 
+              value={formData.special_instructions} 
+              onChange={e => setFormData({...formData, special_instructions: e.target.value})} 
+              placeholder="e.g., Ordering from KFC. No heavy liquids..." 
+              className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" 
+            />
           </div>
 
           <div className="grid grid-cols-2 gap-3 pt-2">
@@ -976,10 +1036,14 @@ function JoinOrderModal({ profile, currentUser, order, onClose, router }: { prof
             <div className="animate-fade-in-up mb-6 pb-6 border-b border-gray-100 space-y-4">
               <div>
                 <label className="block text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1.5 ml-1">Paste Cart Link</label>
+                {/* 🚨 MAGIC PASTE APPLIED HERE TOO */}
                 <input 
                   type="url" required 
                   value={joinForm.cart_link} 
-                  onChange={e => setJoinForm({...joinForm, cart_link: e.target.value})} 
+                  onChange={e => {
+                    const extractedUrl = extractUrl(e.target.value);
+                    setJoinForm({...joinForm, cart_link: extractedUrl});
+                  }} 
                   placeholder="https://link.blinkit.com/..." 
                   className="w-full px-4 py-3.5 bg-gray-50 border border-gray-200 rounded-2xl text-sm font-medium outline-none focus:bg-white focus:ring-2 focus:ring-purple-500 transition-all shadow-inner" 
                 />

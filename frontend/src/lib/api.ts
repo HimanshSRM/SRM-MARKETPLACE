@@ -1,3 +1,8 @@
+'use client';
+
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
 import { auth } from '@/lib/firebase'; // 🚨 Required to get the token dynamically
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000' || 'http://localhost:8000';
@@ -917,7 +922,7 @@ export const getActiveGroupOrders = async () => {
   return res.json(); 
 };
 
-// 🚨 THE FIX: Brand New Paginated Historical Pools Route
+// Brand New Paginated Historical Pools Route
 export const getPastPools = async (cursor: string = '') => {
   const params = new URLSearchParams();
   if (cursor) params.append('cursor', cursor);
@@ -937,7 +942,8 @@ export const createGroupOrder = async (orderData: {
   contact_number: string, 
   expires_in_minutes: number, 
   upi_id: string,
-  cart_link?: string 
+  cart_link?: string ,
+  special_instructions?: string
 }) => {
   const res = await authenticatedFetch(`${API_URL}/api/pools`, {
     method: 'POST', body: JSON.stringify(orderData)
@@ -965,13 +971,15 @@ export const joinGroupOrder = async (
   return res.json();
 };
 
+// 🚨 THE FIX: Upgraded to accept etaMinutes for the Live Countdown
 export const updateGroupOrderStatus = async (
   poolId: string, 
-  status: 'locked' | 'delivered' | 'cancelled', 
-  deliveryFee: number = 0
+  status: 'open' | 'locked' | 'delivered' | 'cancelled' | 'settled', 
+  deliveryFee: number = 0,
+  etaMinutes: number = 0
 ) => {
   const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/status`, {
-    method: 'PUT', body: JSON.stringify({ status, delivery_fee: deliveryFee })
+    method: 'PUT', body: JSON.stringify({ status, delivery_fee: deliveryFee, eta_minutes: etaMinutes })
   });
   if (!res.ok) throw new Error("Failed to update order status");
   return res.json();
@@ -1025,15 +1033,15 @@ export const updateParticipantCart = async (
   return res.json();
 };
 
-// 🚨 THE FIX: New broadcast route for Live Tracking
-export const broadcastTrackingLink = async (poolId: string, trackingUrl: string) => {
-  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/tracking`, {
+// 🚨 THE FIX: Replaced broadcastTrackingLink with updateHostInstructions
+export const updateHostInstructions = async (poolId: string, instructions: string) => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/instructions`, {
     method: 'PUT', 
-    body: JSON.stringify({ tracking_url: trackingUrl })
+    body: JSON.stringify({ instructions })
   });
   if (!res.ok) {
     const error = await res.json().catch(() => ({}));
-    throw new Error(error.detail || "Failed to broadcast tracking link");
+    throw new Error(error.detail || "Failed to update host instructions");
   }
   return res.json();
 };
