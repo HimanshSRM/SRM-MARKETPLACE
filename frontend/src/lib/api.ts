@@ -1024,3 +1024,16 @@ export const updateParticipantCart = async (
   }
   return res.json();
 };
+
+// 🚨 THE FIX: New broadcast route for Live Tracking
+export const broadcastTrackingLink = async (poolId: string, trackingUrl: string) => {
+  const res = await authenticatedFetch(`${API_URL}/api/pools/${poolId}/tracking`, {
+    method: 'PUT', 
+    body: JSON.stringify({ tracking_url: trackingUrl })
+  });
+  if (!res.ok) {
+    const error = await res.json().catch(() => ({}));
+    throw new Error(error.detail || "Failed to broadcast tracking link");
+  }
+  return res.json();
+};

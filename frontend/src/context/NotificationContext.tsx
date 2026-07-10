@@ -59,32 +59,44 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
 
     const setupListeners = async () => {
       try {
-        // --- A. FCM Push Listener (Chats, Actions, Moderation) ---
-        const msg = await messaging();
-        if (msg) {
-          unsubscribeFCM = onMessage(msg, (payload) => {
-            const targetUrl = payload.data?.url || '/inbox';
-            const currentPath = window.location.pathname;
+        // --- A. THE FIX: Explicitly Register the Service Worker first ---
+        if ('serviceWorker' in navigator) {
+          try {
+            const registration = await navigator.serviceWorker.register('/firebase-messaging-sw.js', {
+              scope: '/', // Ensures the SW controls the entire app
+            });
+            console.log('Service Worker successfully registered with scope:', registration.scope);
+            
+            // Pass the registration to the messaging object so Firebase knows about it
+            const msg = await messaging();
+            if (msg) {
+              unsubscribeFCM = onMessage(msg, (payload) => {
+                const targetUrl = payload.data?.url || '/inbox';
+                const currentPath = window.location.pathname;
 
-            // Suppress toast if they are already in the chat room they are being alerted about
-            if (currentPath === targetUrl) return; 
+                // Suppress toast if they are already in the chat room they are being alerted about
+                if (currentPath === targetUrl) return; 
 
-            setUnreadCount(prev => prev + 1);
+                setUnreadCount(prev => prev + 1);
 
-            // 🚨 THE FIX: Clickable In-App Chat Toast
-            toast.custom((t) => (
-              <div 
-                onClick={() => { toast.dismiss(t.id); router.push(targetUrl); }} 
-                className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-blue-500 flex items-start gap-3 hover:bg-gray-50 transition"
-              >
-                <div className="text-2xl">💬</div>
-                <div>
-                  <p className="font-bold text-sm text-gray-900 mb-1">{payload.notification?.title || 'New Alert'}</p>
-                  <p className="text-xs text-gray-600 line-clamp-2">{payload.notification?.body}</p>
-                </div>
-              </div>
-            ), { duration: 5000, position: 'top-right' });
-          });
+                // Clickable In-App Chat Toast
+                toast.custom((t) => (
+                  <div 
+                    onClick={() => { toast.dismiss(t.id); router.push(targetUrl); }} 
+                    className="cursor-pointer bg-white p-4 rounded-xl shadow-lg border-l-4 border-blue-500 flex items-start gap-3 hover:bg-gray-50 transition"
+                  >
+                    <div className="text-2xl">💬</div>
+                    <div>
+                      <p className="font-bold text-sm text-gray-900 mb-1">{payload.notification?.title || 'New Alert'}</p>
+                      <p className="text-xs text-gray-600 line-clamp-2">{payload.notification?.body}</p>
+                    </div>
+                  </div>
+                ), { duration: 5000, position: 'top-right' });
+              });
+            }
+          } catch (err) {
+            console.error('Service Worker registration failed:', err);
+          }
         }
 
         // --- B. The "Uber Style" Global Cart Pool Broadcast ---
@@ -110,7 +122,7 @@ export const NotificationProvider = ({ children }: { children: React.ReactNode }
                 
                 // Don't show the broadcast to the person who just created it!
                 if (newPool.host_id !== profile.uid) {
-                  // 🚨 THE FIX: Clickable Pool Broadcast that forces the homepage to open the right tab!
+                  // Clickable Pool Broadcast that forces the homepage to open the right tab!
                   toast.custom((t) => (
                     <div 
                       onClick={() => { 

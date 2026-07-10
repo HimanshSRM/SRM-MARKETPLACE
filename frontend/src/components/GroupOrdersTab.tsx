@@ -5,11 +5,8 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
-import { createGroupOrder, joinGroupOrder, updateParticipantCart, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage, updateParticipantPrice, getPastPools } from '@/lib/api';
+import { createGroupOrder, joinGroupOrder, updateParticipantCart, updateGroupOrderStatus, kickParticipant, settleGroupOrder, sendMessage, updateParticipantPrice, getPastPools, broadcastTrackingLink } from '@/lib/api';
 import { useAuth } from '@/context/AuthContext';
-import { QRCodeSVG } from 'qrcode.react';
-
-// 🚨 THE FIX: Import the GuestBlockerModal so we can trigger it directly
 import GuestBlockerModal from '@/components/GuestBlockerModal'; 
 
 // --- INTERFACES ---
@@ -17,7 +14,7 @@ interface PoolItem { item_name: string; quantity: number; estimated_price: numbe
 interface Participant { user_id: string; user_name: string; contact_number: string; block?: string; cart_link?: string; items: PoolItem[]; total_estimated_price: number; } 
 interface GroupOrder {
   id: string; host_id: string; host_name: string; app_name: string; pickup_location: string; contact_number: string;
-  upi_id?: string; cart_link?: string; delivery_fee?: number; 
+  upi_id?: string; cart_link?: string; delivery_fee?: number; tracking_url?: string; // 🚨 ADDED TRACKING URL
   status: 'open' | 'locked' | 'delivered' | 'cancelled' | 'settled'; 
   expires_at: string; created_at: string; chat_room_id: string; participants: Participant[]; participant_ids: string[];
 }
@@ -29,8 +26,6 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showJoinModal, setShowJoinModal] = useState<GroupOrder | null>(null); 
   const [showManageModal, setShowManageModal] = useState<GroupOrder | null>(null); 
-  
-  // 🚨 THE FIX: Added state for the Verification Modal
   const [showVerifyModal, setShowVerifyModal] = useState(false);
   
   const [myActivePools, setMyActivePools] = useState<GroupOrder[]>([]);
@@ -155,7 +150,6 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
             </div>
 
             <div className="space-y-3 max-w-xs mx-auto">
-              {/* 🚨 THE FIX: Replaced login route with direct trigger to the GuestBlockerModal */}
               <button onClick={() => setShowVerifyModal(true)} className="w-full py-4 bg-gray-900 text-white font-black rounded-xl hover:bg-black active:scale-95 transition-all shadow-md">
                 Verify ID
               </button>
@@ -166,7 +160,6 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
           </div>
         </div>
 
-        {/* 🚨 THE FIX: Renders the modal natively on top of the Guest page when they click the button */}
         {showVerifyModal && <GuestBlockerModal onClose={() => setShowVerifyModal(false)} />}
       </div>
     );
@@ -387,6 +380,24 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
         </div>
       )}
 
+      {/* 🚨 THE LIVE TRACKING BUTTON */}
+      {order.tracking_url && !isPast && (
+        <div className="mt-3 mb-1">
+          <a 
+            href={order.tracking_url} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="w-full bg-gray-900 text-white py-2.5 rounded-xl font-bold flex items-center justify-center gap-2 hover:bg-black transition shadow-sm text-sm"
+          >
+            <span className="relative flex h-2 w-2">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+            </span>
+            📍 Track Live Delivery
+          </a>
+        </div>
+      )}
+
       <div className="mt-auto pt-4 flex flex-wrap gap-2">
         {isHost ? (
           <>
@@ -431,7 +442,7 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router }: any) {
 }
 
 // ==========================================
-// 2. THE MANAGE ORDER MODAL (Host Edit Prices)
+// 2. THE MANAGE ORDER MODAL (Host Edit Prices & Tracking)
 // ==========================================
 function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: GroupOrder, currentUser: any, onClose: () => void, onUpdate: () => void }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -564,6 +575,39 @@ function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: Gr
             <button onClick={onClose} className="p-2 text-gray-400 hover:text-gray-900 bg-gray-50 hover:bg-gray-100 rounded-xl transition"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" /></svg></button>
           </div>
         </div>
+
+        {/* 🚨 THE HOST TRACKING INPUT */}
+        {isHost && order.status === 'locked' && (
+          <div className="mb-6 p-4 bg-blue-50 border border-blue-100 rounded-2xl animate-fade-in-up">
+            <h4 className="text-sm font-black text-blue-900 mb-1">📍 Share Live Tracking (Optional)</h4>
+            <p className="text-xs text-blue-700 mb-3 font-medium">If you ordered on an app, paste the tracking link here.</p>
+            <div className="flex gap-2">
+              <input 
+                type="url" 
+                id="trackingInput"
+                defaultValue={order.tracking_url || ""}
+                placeholder="https://link.blinkit.com/..." 
+                className="flex-1 px-3 py-2 text-xs font-medium border border-blue-200 rounded-xl outline-none focus:ring-2 focus:ring-blue-500 shadow-inner"
+              />
+              <button 
+                onClick={async () => {
+                  const url = (document.getElementById('trackingInput') as HTMLInputElement).value;
+                  if (!url) return alert("Paste a valid link first!");
+                  try {
+                    setIsRefreshing(true);
+                    await broadcastTrackingLink(order.id, url);
+                    onUpdate();
+                  } catch(e: any) { alert(e.message); }
+                  finally { setIsRefreshing(false); }
+                }}
+                disabled={isRefreshing}
+                className="bg-blue-600 text-white px-4 py-2 rounded-xl font-bold text-xs shadow-sm hover:bg-blue-700 disabled:opacity-50 transition"
+              >
+                Broadcast
+              </button>
+            </div>
+          </div>
+        )}
 
         {order.participants.length === 0 ? (
           <div className="text-center py-10 bg-gray-50 rounded-2xl border border-dashed"><p className="text-gray-500 font-medium">Waiting for people to join...</p></div>

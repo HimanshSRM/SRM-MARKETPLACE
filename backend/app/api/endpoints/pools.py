@@ -1,17 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, HttpUrl
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import uuid
+
 from app.core.security import get_current_user
-from app.core.firebase import db , firestore
+from app.core.firebase import db, firestore
 from google.cloud.firestore import ArrayUnion, ArrayRemove
-
-
 
 router = APIRouter()
 
-# --- HYBRID SCHEMAS ---
+# ==========================================
+# HYBRID SCHEMAS
+# ==========================================
 class PoolCreate(BaseModel):
     app_name: str
     pickup_location: str
@@ -35,11 +36,17 @@ class PoolStatusUpdate(BaseModel):
     status: str 
     delivery_fee: float = 0.0   # Delivery fee to split among participants
 
-# 🚨 NEW SCHEMA: For the Host to override a joiner's total price
 class ParticipantPriceUpdate(BaseModel):
     new_price: float
 
-# --- ROUTES ---
+# 🚨 NEW: Schema for Live Tracking
+class TrackingLinkUpdate(BaseModel):
+    tracking_url: str
+
+
+# ==========================================
+# GET FEEDS (Active & Past)
+# ==========================================
 @router.get("/")
 async def get_active_pools(current_user: dict = Depends(get_current_user)):
     """Fetches Open public pools AND any pool (Locked/Delivered) the user is involved in."""
@@ -80,7 +87,7 @@ async def get_active_pools(current_user: dict = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# 🚨 NEW: The paginated Past Orders route!
+
 @router.get("/past", tags=["Group Orders"])
 async def get_past_pools(
     limit: int = Query(15, le=30),
@@ -91,7 +98,6 @@ async def get_past_pools(
     try:
         uid = current_user["uid"]
         
-        # 🚨 THE FIX: Removed "locked" so active orders stop jumping into history!
         query = db.collection("group_orders")\
             .where("participant_ids", "array_contains", uid)\
             .where("status", "in", ["delivered", "settled", "cancelled"])\
@@ -121,6 +127,9 @@ async def get_past_pools(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================
+# CREATE & JOIN
+# ==========================================
 @router.post("/")
 async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends(get_current_user)):
     try:
@@ -291,6 +300,9 @@ async def update_my_cart(
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==========================================
+# STATUS & MODIFICATIONS (Host Only)
+# ==========================================
 @router.put("/{pool_id}/status")
 async def update_pool_status(
     pool_id: str, 
@@ -362,6 +374,51 @@ async def update_pool_status(
 
         return {"status": payload.status}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
+
+# 🚨 NEW: The LIVE TRACKING Update Route
+@router.put("/{pool_id}/tracking", tags=["Group Orders"])
+async def update_pool_tracking(
+    pool_id: str, 
+    payload: TrackingLinkUpdate, 
+    current_user: dict = Depends(get_current_user)
+):
+    """Allows the Host to optionally share a live tracking link."""
+    try:
+        pool_ref = db.collection("group_orders").document(pool_id)
+        pool_doc = pool_ref.get()
+        if not pool_doc.exists: 
+            raise HTTPException(status_code=404, detail="Order not found.")
+        
+        pool = pool_doc.to_dict()
+
+        if pool["host_id"] != current_user["uid"]:
+            raise HTTPException(status_code=403, detail="Only the Host can update the tracking link.")
+
+        # Update the database
+        pool_ref.update({
+            "tracking_url": payload.tracking_url,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
+
+        # Drop a notification in the group chat
+        chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
+        msg = "📍 The Host has added a live tracking link for the delivery! Check your pool dashboard."
+        
+        chat_ref.collection("messages").add({
+            "sender_id": "system", 
+            "sender_name": "Cart Pool Bot", 
+            "text": msg,
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        })
+        chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
+
+        return {"message": "Tracking link broadcasted!"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/{pool_id}/participants/{user_id}/price")
