@@ -1,6 +1,16 @@
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-compat.js');
 
+// 🚨 THE FIX: Force the service worker to activate immediately
+self.addEventListener('install', function(event) {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', function(event) {
+  event.waitUntil(clients.claim());
+});
+
+// Public configuration (Safe to be visible to clients)
 const firebaseConfig = {
   apiKey: "AIzaSyDRUWONmzZ2fMUmlRF0oSfY5i46Y8rpuoM",
   authDomain: "srm-marketplace-c5035.firebaseapp.com",
@@ -11,46 +21,45 @@ const firebaseConfig = {
 };
 
 firebase.initializeApp(firebaseConfig);
-const messaging = firebase.messaging();
 
-// 1. Wakes up to paint the notification when the app is closed
-messaging.onBackgroundMessage((payload) => {
-  console.log('[firebase-messaging-sw.js] Received background message ', payload);
+// 🚨 OPTIMIZATION: Native Push Event avoids FCM wrapper overhead
+self.addEventListener('push', function(event) {
+  if (!event.data) return;
+
+  const payload = event.data.json();
+  const customData = payload.data || {};
   
-  const notificationTitle = payload.notification.title;
+  const notificationTitle = customData.title || 'SRM Marketplace';
   const notificationOptions = {
-    body: payload.notification.body,
-    icon: '/icon.png', // Make sure you have a favicon or logo here!
+    body: customData.body || 'You have a new update!',
+    icon: '/icon.png', 
     badge: '/icon.png',
-    data: payload.data
+    data: { url: customData.url || '/inbox' }
   };
 
-  self.registration.showNotification(notificationTitle, notificationOptions);
+  // ROBUSTNESS: Ensure OS waits for paint before sleeping
+  event.waitUntil(
+    self.registration.showNotification(notificationTitle, notificationOptions)
+  );
 });
 
-// 2. 🚨 THE FIX: Handles the actual tap action on the OS lock screen
+// ROBUSTNESS: Smart routing upon click
 self.addEventListener('notificationclick', function(event) {
-  console.log('[firebase-messaging-sw.js] Notification clicked.', event);
-  
-  // Close the native notification popup
   event.notification.close();
 
-  // Extract the target URL from the payload (default to /inbox if missing)
   const relativeUrl = event.notification.data?.url || '/inbox';
-
-  // 🚨 SMART ROUTING: Convert relative path to an absolute PWA URL so it doesn't break
   const targetUrl = new URL(relativeUrl, self.location.origin).href;
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // Scenario A: The user has the PWA open in the background. Focus it and route them.
+      // Bring existing tab to front if already open
       for (const client of clientList) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           client.navigate(targetUrl);
           return client.focus();
         }
       }
-      // Scenario B: The PWA is completely closed. Launch it directly to the URL.
+      // Otherwise, open a fresh window
       if (clients.openWindow) {
         return clients.openWindow(targetUrl);
       }

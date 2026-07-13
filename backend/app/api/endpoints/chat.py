@@ -41,18 +41,15 @@ async def initiate_chat(
         seller_name = owner_data.get("name") or owner_data.get("email", "Seller").split("@")[0]
         
         if owner_role == "shop_verified" and data.bid_amount is not None:
-            raise HTTPException(status_code=400, detail="Verified Shops have fixed prices. Bidding is disabled.")
+            raise HTTPException(status_code=400, detail="Verified Shops have fixed prices. Offers are disabled.")
 
-        # 🚨 THE FIX: Smart Title Fetching for Subcollections
         listing_title = "Marketplace Item"
         
         if owner_role == "shop_verified":
-            # It's a shop item, look inside the catalog!
             catalog_doc = db.collection("shops").document(data.owner_id).collection("catalog").document(data.listing_id).get()
             if catalog_doc.exists:
                 listing_title = catalog_doc.to_dict().get("name", "Shop Item")
         else:
-            # It's a normal student item
             listing_doc = db.collection("listings").document(data.listing_id).get()
             if listing_doc.exists:
                 l_data = listing_doc.to_dict()
@@ -117,11 +114,11 @@ async def initiate_chat(
 
 
 # ==========================================
-# 2. GET USER INBOX (Highly Optimized Bulk Fetch)
+# 2. GET USER INBOX 
 # ==========================================
 @router.get("/inbox", tags=["Chat & Bidding"])
 async def get_user_inbox(
-    limit: int = Query(35, le=50), # ✅ PERFECT 35 ITEM LIMIT
+    limit: int = Query(35, le=50), 
     user: dict = Depends(get_current_user)
 ): 
     try:
@@ -129,7 +126,6 @@ async def get_user_inbox(
         role = user.get("role", "guest")
         email = user.get("email", "")
         
-        # 🚨 THE QUOTA SAVER: Capped streams mapped to updated_at
         raw_buying = list(db.collection("chat_rooms").where("buyer_id", "==", uid)
             .order_by("updated_at", direction=firestore.Query.DESCENDING)
             .limit(limit).stream())
@@ -157,7 +153,6 @@ async def get_user_inbox(
             if data.get("type") == "group_order" and not data.get("host_name") and data.get("host_id"):
                 needed_user_ids.add(data.get("host_id"))
             
-            # 🚨 AUTO-HEALER STEP 1: Grab UIDs for legacy tickets missing names
             if data.get("reported_uid") and not data.get("reported_name"):
                 needed_user_ids.add(data.get("reported_uid"))
 
@@ -194,7 +189,6 @@ async def get_user_inbox(
             if room.get("type") == "group_order" and not room.get("host_name") and room.get("host_id"):
                 room["host_name"] = user_cache.get(room.get("host_id"))
                 
-            # 🚨 AUTO-HEALER STEP 2: Dynamically patch the Inbox UI for old tickets
             if room.get("reported_uid") and not room.get("reported_name"):
                 real_name = user_cache.get(room.get("reported_uid"))
                 if real_name:
@@ -252,7 +246,7 @@ async def get_user_inbox(
 @router.get("/{room_id}/messages", tags=["Chat & Bidding"])
 async def get_chat_history(
     room_id: str, 
-    limit: int = Query(50, le=100), # ✅ SAFEGUARD LIMIT FOR MASSIVE CHATS
+    limit: int = Query(50, le=100),
     user: dict = Depends(get_current_user)
 ):
     try:
@@ -269,7 +263,6 @@ async def get_chat_history(
         room_data = room_doc.to_dict()
         room_data["id"] = room_doc.id
         
-        # 🚨 THE AUTO-HEALER STEP 3: Permanently fix the database if it finds a corrupted legacy ticket
         if room_data.get("is_ticket") and room_data.get("reported_uid") and not room_data.get("reported_name"):
             reported_user_doc = db.collection("users").document(room_data["reported_uid"]).get()
             if reported_user_doc.exists:
@@ -303,7 +296,6 @@ async def get_chat_history(
         if not (is_buyer or is_seller or is_admin_support or is_participant):
             raise HTTPException(status_code=403, detail="Access denied. You are not in this chat.")
 
-        # 🚨 OPTIMIZATION: Grabs only the 50 most recent messages instead of potentially thousands
         messages_query = room_ref.collection("messages")\
             .order_by("timestamp", direction=firestore.Query.DESCENDING)\
             .limit(limit).stream()
@@ -317,7 +309,6 @@ async def get_chat_history(
                 msg["created_at"] = str(msg["created_at"])
             messages.append(msg)
 
-        # Re-sort to chronological order for the frontend
         messages.sort(key=lambda x: str(x.get("created_at") or x.get("timestamp") or ""))
 
         return {
@@ -364,7 +355,6 @@ async def send_message(
         if not (is_buyer or is_seller or is_admin_support or is_participant):
             raise HTTPException(status_code=403, detail="403: Access denied. You are not in this chat.")
 
-        # 🚨 THE RE-OPEN TICKET UPGRADE
         is_resolved = room_data.get("status") == "resolved"
         if room_data.get("is_ticket") and is_resolved and not is_admin_support:
             room_ref.update({"status": "open"})
@@ -409,7 +399,6 @@ async def send_message(
                     update_data["admin_response"] = msg_data["text"]
                 t.reference.update(update_data)
 
-        # 🚨 THE AUTO-REPLY INTERCEPTOR LOGIC
         seller_id = room_data.get("seller_id")
         if is_buyer and seller_id and seller_id != "ADMIN_TEAM":
             shop_doc = db.collection("shops").document(seller_id).get()
@@ -487,7 +476,7 @@ async def send_message(
 
 
 # ==========================================
-# 5. ACCEPT BID
+# 5. ACCEPT OFFER (Host Only)
 # ==========================================
 @router.post("/{room_id}/messages/{message_id}/accept", tags=["Chat & Bidding"])
 async def accept_bid(
@@ -507,7 +496,7 @@ async def accept_bid(
         room_data = room_doc.to_dict()
         
         if room_data.get("seller_id") != uid:
-            raise HTTPException(status_code=403, detail="Security Error: Only the seller can accept a bid.")
+            raise HTTPException(status_code=403, detail="Security Error: Only the seller can accept an offer.")
             
         listing_id = room_data.get("listing_id")
         listing_ref = db.collection("listings").document(listing_id)
@@ -526,12 +515,12 @@ async def accept_bid(
             await request.app.state.redis.enqueue_job(
                 'process_push_notification',
                 buyer_id,
-                "🎉 Bid Accepted!",
-                "The seller accepted your bid! Open the chat to finalize details.",
+                "🎉 Offer Accepted!",
+                "The seller accepted your offer! Open the chat to finalize details.",
                 f"/chat/{room_id}"
             )
         
-        return {"message": "Bid accepted! The item is now marked as sold.", "listing_id": listing_id}
+        return {"message": "Offer accepted! The item is now marked as sold.", "listing_id": listing_id}
         
     except HTTPException:
         raise 
@@ -607,14 +596,13 @@ async def hide_chat_room(
     
 
 # ==========================================
-# 8. CREATE USER REPORT TICKET (DEDICATED MODERATION ROUTE)
+# 8. CREATE USER REPORT TICKET
 # ==========================================
 @router.post("/support/ticket", tags=["Chat & Support"])
 async def create_user_report_ticket(
     payload: TicketCreate, 
     user: dict = Depends(get_current_user) 
 ):
-    """STRICTLY handles User Reporting & Moderation."""
     try:
         uid = user.get("uid")
         buyer_name = user.get("name") or user.get("email", "User").split("@")[0]
@@ -623,7 +611,7 @@ async def create_user_report_ticket(
         message_content = getattr(payload, "message", getattr(payload, "description", "No details provided."))
         
         if not reported_uid:
-            raise HTTPException(status_code=400, detail="Missing reported_uid. General Support must use the dedicated support route.")
+            raise HTTPException(status_code=400, detail="Missing reported_uid.")
 
         reported_name = "Unknown User"
         target_ref = db.collection("users").document(reported_uid)
@@ -634,7 +622,6 @@ async def create_user_report_ticket(
             reported_name = t_data.get("name") or t_data.get("email", "").split("@")[0] or "Unknown User"
             reported_by = t_data.get("reported_by", [])
             
-            # 🚨 ESCALATION: User reporting the same person twice
             if uid in reported_by:
                 user_tickets = db.collection("chat_rooms").where("buyer_id", "==", uid).where("is_ticket", "==", True).stream()
                 
@@ -661,7 +648,7 @@ async def create_user_report_ticket(
                                 "updated_at": firestore.SERVER_TIMESTAMP
                             })
                             
-                        raise HTTPException(status_code=400, detail="You have already reported this user. We have escalated your previous report to the top of the Admin queue.")
+                        raise HTTPException(status_code=400, detail="You have already reported this user. We have escalated your previous report.")
                 
                 raise HTTPException(status_code=400, detail="You have already reported this user.")
             
@@ -729,11 +716,11 @@ async def create_user_report_ticket(
 
 
 # ==========================================
-# 9. REVERT DEAL (Seller Only)
+# 9. REVERT DEAL (Seller Only) - 🔥 GHOST DEAL FIX
 # ==========================================
 @router.post("/{room_id}/revert", tags=["Chat & Bidding"])
 async def revert_deal(room_id: str, current_user: dict = Depends(get_current_user)):
-    """Allows the seller to revert a collapsed deal."""
+    """Wipes contact info and resets status to prevent Ghost Deals."""
     try:
         room_ref = db.collection("chat_rooms").document(room_id)
         room = room_ref.get().to_dict()
@@ -741,15 +728,27 @@ async def revert_deal(room_id: str, current_user: dict = Depends(get_current_use
         if not room or room.get("seller_id") != current_user["uid"]:
             raise HTTPException(status_code=403, detail="Only the seller can revert this deal.")
 
-        room_ref.update({"status": "active", "updated_at": firestore.SERVER_TIMESTAMP})
+        # 🚨 THE FIX: Aggressively wipe all contact info and reset to active
+        room_ref.update({
+            "status": "active", 
+            "buyer_phone": None,
+            "seller_phone": None,
+            "seller_upi": None,
+            "updated_at": firestore.SERVER_TIMESTAMP
+        })
 
         if room.get("listing_id"):
             db.collection("listings").document(room["listing_id"]).update({
                 "status": "active", 
                 "buyer_id": None
             })
+            
+        # 🚨 THE FIX: Reset the previously accepted message so the frontend doesn't re-lock
+        accepted_msgs = room_ref.collection("messages").where("bid_status", "in", ["accepted", "ACCEPTED"]).stream()
+        for msg in accepted_msgs:
+            msg.reference.update({"bid_status": "reverted", "status": "reverted"})
 
-        msg = "🔄 The seller has reverted this deal. The item is back on the market."
+        msg = "🔄 The seller has canceled the previous deal. The item is back on the market. You can continue negotiations."
         room_ref.collection("messages").add({
             "sender_id": "system", "sender_name": "System", "text": msg,
             "timestamp": firestore.SERVER_TIMESTAMP
@@ -761,11 +760,10 @@ async def revert_deal(room_id: str, current_user: dict = Depends(get_current_use
 
 
 # ==========================================
-# 10. SAVE CHAT CONTACT INFO (Global + Room)
+# 10. SAVE CHAT CONTACT INFO
 # ==========================================
 @router.post("/{room_id}/contact", tags=["Chat & Bidding"])
 async def update_chat_contact(room_id: str, payload: ChatContactUpdate, current_user: dict = Depends(get_current_user)):
-    """Saves contact info to the active chat room, and updates the global profile IF save_as_default is True."""
     try:
         uid = current_user["uid"]
         room_ref = db.collection("chat_rooms").document(room_id)
@@ -785,7 +783,6 @@ async def update_chat_contact(room_id: str, payload: ChatContactUpdate, current_
             if payload.save_as_default: 
                 user_updates["upi_id"] = payload.upi_id
 
-        # ✅ Cleanly fixed the syntax error here
         if user_updates and payload.save_as_default:
             db.collection("users").document(uid).update(user_updates) 
 

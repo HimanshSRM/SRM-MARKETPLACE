@@ -4,16 +4,20 @@ from arq.connections import RedisSettings
 import firebase_admin
 from firebase_admin import credentials, messaging, firestore
 
-# Initialize Firebase for the worker
+# ==========================================
+# 1. SECURE FIREBASE INITIALIZATION
+# ==========================================
 if not firebase_admin._apps:
     cred = credentials.Certificate("serviceAccountKey.json")
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
-# 🚨 HIGHLY OPTIMIZED BACKGROUND JOB
+# ==========================================
+# 2. OPTIMIZED BACKGROUND JOB (DATA-ONLY)
+# ==========================================
 async def process_push_notification(ctx, user_id: str, title: str, body: str, url: str = "/inbox"):
-    """Pulls tokens from Firestore and sends the push to ALL devices via Google FCM Multicast."""
+    """Sends a data-only payload via Multicast and cleans up dead tokens."""
     try:
         user_ref = db.collection("users").document(user_id)
         user_doc = user_ref.get()
@@ -22,22 +26,22 @@ async def process_push_notification(ctx, user_id: str, title: str, body: str, ur
             return False
             
         user_data = user_doc.to_dict()
-        tokens = user_data.get("fcmTokens", [])
+        tokens = list(set(user_data.get("fcmTokens", [])))
         
         if not tokens:
             return False
 
-        # 🚨 THE FIX: One API call for all devices simultaneously (Multicast)
         message = messaging.MulticastMessage(
-            notification=messaging.Notification(title=title, body=body),
-            data={"url": str(url)}, # Must be forced to a string for the FCM data payload
-            tokens=tokens,
+            data={
+                "title": str(title),
+                "body": str(body),
+                "url": str(url)
+            },
+            tokens=tokens[:500], 
         )
         
-        # Fire the single batch request to Google FCM
         response = messaging.send_each_for_multicast(message)
         
-        # Cleanup invalid tokens (e.g. if the user uninstalled the app on an old device)
         if response.failure_count > 0:
             failed_tokens = []
             for idx, resp in enumerate(response.responses):
@@ -53,9 +57,41 @@ async def process_push_notification(ctx, user_id: str, title: str, body: str, ur
         print(f"Worker Error: {e}")
         return False
 
-# 🚨 Connect the worker to your Redis container
+# ==========================================
+# 3. GLOBAL TOPIC BROADCAST (NEW)
+# ==========================================
+async def broadcast_new_pool_topic(ctx, pool_id: str, app_name: str, host_name: str, pickup_location: str):
+    """Broadcasts a real-time notification to all active devices using FCM Topics."""
+    try:
+        topic_name = "campus_active_pools"
+        
+        # Data-only payload to match your Service Worker architecture
+        message = messaging.Message(
+            topic=topic_name,
+            data={
+                "type": "new_pool",
+                "pool_id": str(pool_id),
+                "title": f"🛒 New {app_name} Pool!",
+                "body": f"{host_name} started a new order to {pickup_location}.",
+                "url": "/" 
+            }
+        )
+        
+        response = messaging.send(message)
+        print(f"Topic Broadcast successful: {response}")
+        return True
+        
+    except Exception as e:
+        print(f"Topic Broadcast Error: {e}")
+        return False
+
+# ==========================================
+# 4. REDIS CONFIGURATION
+# ==========================================
 redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
 
 class WorkerSettings:
-    functions = [process_push_notification]
+    # 🚨 FIX: Both functions are now successfully registered to the worker
+    functions = [process_push_notification, broadcast_new_pool_topic]
     redis_settings = RedisSettings.from_dsn(redis_url)
+    max_jobs = 100

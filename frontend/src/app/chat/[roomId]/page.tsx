@@ -15,30 +15,25 @@ export default function ChatRoomPage() {
   const roomId = params.roomId as string;
   const { profile, isLoading: isAuthLoading } = useAuth();
   
-  // --- CORE DATA STATES ---
   const [roomDetails, setRoomDetails] = useState<any>(null);
   const [poolDetails, setPoolDetails] = useState<any>(null); 
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [roomStatus, setRoomStatus] = useState<'open' | 'locked' | 'delivered' | 'active' | 'sold' | 'resolved'>('active');
   const [isLoading, setIsLoading] = useState(true);
-  const [isNotFound, setIsNotFound] = useState(false); // 🚨 FIX: Added NotFound State
+  const [isNotFound, setIsNotFound] = useState(false);
 
-  // --- SHOP & METADATA STATES ---
   const [quickReplies, setQuickReplies] = useState<any[]>([]);
   const [shopPhone, setShopPhone] = useState<string | null>(null);
 
-  // --- PAYMENT MODALS STATES ---
   const [showUpiModal, setShowUpiModal] = useState(false);
   const [showP2PUpiModal, setShowP2PUpiModal] = useState(false); 
   const [p2pUpiId, setP2pUpiId] = useState(''); 
 
-  // --- CHAT INPUT STATES ---
   const [pendingMessages, setPendingMessages] = useState<any[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [isBidding, setIsBidding] = useState(false);
   const [bidAmount, setBidAmount] = useState('');
 
-  // --- MARKETPLACE POST-DEAL STATES ---
   const [contactPhoneInput, setContactPhoneInput] = useState('');
   const [contactUpiInput, setContactUpiInput] = useState('');
   const [isSavingContact, setIsSavingContact] = useState(false);
@@ -46,7 +41,6 @@ export default function ChatRoomPage() {
   const [isEditingContact, setIsEditingContact] = useState(false);
   const [saveAsDefault, setSaveAsDefault] = useState(true);
 
-  // --- MODERATION STATES ---
   const [modAction, setModAction] = useState<'warn' | 'hide' | 'delete' | 'restore' |null>(null);
   const [modReason, setModReason] = useState('');
   const [userModReason, setUserModReason] = useState('');
@@ -63,14 +57,13 @@ export default function ChatRoomPage() {
 
   useEffect(() => { if (!isSelectionMode) scrollToBottom(); }, [messages, pendingMessages, isSelectionMode]);
 
-  // 🚨 FIX 1: Immediately wipe state when the URL changes to prevent the UI from flashing old data
   useEffect(() => {
     setRoomDetails(null);
     setMessages([]);
     setPoolDetails(null);
     setRoomStatus('active');
     setIsLoading(true);
-    setIsNotFound(false); // Reset NotFound state on route change
+    setIsNotFound(false);
   }, [roomId]);
 
   useEffect(() => {
@@ -160,15 +153,12 @@ export default function ChatRoomPage() {
     try {
       setIsLoading(true);
       const { room } = await getChatMessages(roomId);
-      
-      // 🚨 THE FIX: Catch 404s and empty data properly
       if (!room || Object.keys(room).length === 0) {
         setIsNotFound(true);
       } else {
         setRoomDetails(room);
       }
     } catch (error) { 
-      console.warn("Failed to load secure chat data.", error); 
       setIsNotFound(true);
     } finally { 
       setIsLoading(false); 
@@ -204,9 +194,7 @@ export default function ChatRoomPage() {
       });
 
       if (hasAcceptedBid) setRoomStatus('sold');
-    }, (error) => {
-      console.warn("Messages stream syncing...", error); // Fail silently
-    });
+    }, (error) => {});
 
     const roomRef = doc(db, 'chat_rooms', roomId);
     const unsubscribeRoom = onSnapshot(roomRef, (docSnap) => {
@@ -226,9 +214,7 @@ export default function ChatRoomPage() {
           } 
         }
       }
-    }, (error) => {
-      console.warn("Room stream syncing...", error); // Fail silently
-    });
+    }, (error) => {});
 
     return () => { unsubscribeMessages(); unsubscribeRoom(); };
   }, [roomId, profile?.uid, isAuthLoading]); 
@@ -257,7 +243,6 @@ export default function ChatRoomPage() {
     }
   }, [roomDetails?.shop_id]);
 
-  // 🚨 UI FIX: Handle Loading, Access Denied, and 404 Not Found cleanly
   if (isAuthLoading || isLoading) return <div className="h-[100dvh] flex items-center justify-center font-bold text-gray-500">Loading Chat...</div>;
   if (!profile || profile.role === 'guest') return <div className="h-[100dvh] flex items-center justify-center font-bold text-red-500">Access Denied. Please Log In.</div>;
   
@@ -307,7 +292,8 @@ export default function ChatRoomPage() {
     if (e) e.preventDefault();
     if (!canChat || !profile?.uid) return;
 
-    const textToSend = overrideText || newMessage || `Bid: ₹${bidAmount}`;
+    // 🚨 OFFER FIX: Uses "Offer" vocabulary instead of "Bid"
+    const textToSend = overrideText || newMessage || `Offer: ₹${bidAmount}`;
     const isBidToSend = isBidding && !overrideText;
     const bidAmountToSend = isBidToSend ? parseFloat(bidAmount) : undefined;
     
@@ -354,9 +340,9 @@ export default function ChatRoomPage() {
   };
 
   const handleAccept = async (messageId: string | number) => {
-    if (isBanned) { alert("Suspended accounts cannot accept bids."); return; }
+    if (isBanned) { alert("Suspended accounts cannot accept offers."); return; }
     if (!confirm("Are you sure? This will mark the item as SOLD and securely exchange contact information.")) return;
-    try { await acceptBid(roomId, messageId); } catch (error) { alert("Error accepting bid."); }
+    try { await acceptBid(roomId, messageId); } catch (error) { alert("Error accepting offer."); }
   };
 
   const handleResolveTicket = async () => {
@@ -608,7 +594,6 @@ export default function ChatRoomPage() {
             )
           )}
 
-          {/* Admin Support Resolution */}
           {!isSelectionMode && isSupport && roomStatus === 'resolved' && <div className="px-4 py-1 bg-blue-600 text-white text-[10px] font-black uppercase tracking-widest rounded-full shadow-sm">Resolved</div>}
           {!isSelectionMode && isSupport && isAdmin && roomStatus !== 'resolved' && (
             <button onClick={handleResolveTicket} className="px-4 py-1.5 bg-gray-900 text-white text-xs font-bold rounded-lg shadow-sm hover:bg-gray-800 transition">Resolve</button>
@@ -664,14 +649,12 @@ export default function ChatRoomPage() {
       {/* 4. CHAT FEED & MODERATION PANELS */}
       <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-gray-50/50">
         
-        {/* Support Ticket Badge */}
         {isSupport && (
           <div className="text-center my-4">
             <span className="px-3 py-1 bg-gray-200 text-gray-600 text-[10px] font-black uppercase rounded-full tracking-wider">Secure Support Channel</span>
           </div>
         )}
 
-        {/* Admin Target User Moderation Block */}
         {isAdmin && isSupport && isDirectUserTicket && (
           <div className="mb-6 bg-gray-900 rounded-3xl p-5 shadow-lg border border-gray-800">
             <div className="flex items-center gap-2 mb-3">
@@ -701,7 +684,6 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* 🚨 REQUIRED FIX: Admin Item Moderation Block */}
         {isAdmin && isSupport && roomDetails?.listing_id && !isDirectUserTicket && (roomDetails?.reference_type === 'item_report' || (!roomDetails?.reference_type && roomDetails?.listing_id !== 'system_support')) && (
           <div className="mb-6 p-5 bg-red-50 border border-red-200 rounded-3xl shadow-sm">
              <h3 className="text-red-800 font-black flex items-center gap-2 mb-3 text-sm">🛡️ Item Moderation</h3>
@@ -792,13 +774,13 @@ export default function ChatRoomPage() {
                     )}
                   </div>
                   
-                  {/* Bidding UI (Marketplace) */}
+                  {/* 🚨 OFFER FIX: Updated Offer Box UI */}
                   {!isSupport && !isGroupOrder && msg.is_bid && msg.bid_amount && (
                     <div className={`mt-3 p-4 rounded-2xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>
                       <div className="flex items-center justify-between gap-6">
-                        <div><span className="text-[10px] font-bold uppercase opacity-80 tracking-wider">Official Bid</span><p className="text-xl font-black">₹{msg.bid_amount}</p></div>
+                        <div><span className="text-[10px] font-bold uppercase opacity-80 tracking-wider">Official Offer</span><p className="text-xl font-black">₹{msg.bid_amount}</p></div>
                         {!isMe && msg.status !== 'accepted' && msg.bid_status !== 'accepted' && roomStatus === 'active' && !isSelectionMode && !isBanned && !msg.isPending && (
-                          <button onClick={(e) => { e.stopPropagation(); handleAccept(msg.id); }} className="px-5 py-2.5 bg-green-600 text-white text-xs font-bold rounded-xl hover:bg-green-700 transition shadow-sm">Accept Deal</button>
+                          <button onClick={(e) => { e.stopPropagation(); handleAccept(msg.id); }} className="px-5 py-2.5 bg-green-600 text-white text-xs font-bold rounded-xl hover:bg-green-700 transition shadow-sm">Accept Offer</button>
                         )}
                         {(msg.status === 'accepted' || msg.bid_status === 'accepted') && <span className="text-xs font-black text-green-500 uppercase tracking-wider">Accepted ✓</span>}
                       </div>
@@ -826,7 +808,6 @@ export default function ChatRoomPage() {
       {/* 5. INPUT FORM & POST-DEAL DASHBOARD */}
       <div className="px-4 py-3 bg-white border-t border-gray-100 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20 shrink-0">
         
-        {/* Quick Replies for Shop Chats */}
         {quickReplies.length > 0 && !isSelectionMode && roomStatus !== 'resolved' && canChat && roomDetails?.buyer_id === profile?.uid && (
           <div className="flex gap-2 pb-3 overflow-x-auto scrollbar-hide">
             {quickReplies.map((qr: any, idx: number) => (
@@ -841,7 +822,6 @@ export default function ChatRoomPage() {
           </div>
         )}
 
-        {/* THE PERSISTENT DEAL HUB (For Sold Items) */}
         {roomStatus === 'sold' && !isGroupOrder && (
           <div className="mb-2 p-4 bg-green-50 rounded-2xl border border-green-200 shadow-sm animate-fade-in-up">
             <div className="flex items-center justify-between mb-4 border-b border-green-200/50 pb-2">
@@ -850,7 +830,6 @@ export default function ChatRoomPage() {
                 <span className="text-green-800 text-sm font-black tracking-wide">Deal finalized for ₹{finalDealPrice}!</span>
               </div>
               
-              {/* 🔄 Revert Deal (Seller Only) */}
               {!amIBuyer && (
                 <button 
                   onClick={async () => {
@@ -862,19 +841,19 @@ export default function ChatRoomPage() {
                   className="flex items-center gap-1 text-[10px] font-black text-gray-500 hover:text-red-600 transition uppercase tracking-widest disabled:opacity-50"
                 >
                   <svg className={`w-3.5 h-3.5 ${isReverting ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-                  {isReverting ? 'Reverting...' : 'Restore Listing'}
+                  {isReverting ? 'Reverting...' : 'Cancel Deal'}
                 </button>
               )}
             </div>
             
-            {/* --- SELLER'S DEAL HUB --- */}
+            {/* 🚨 CONTACT HUB FIX: Unified phone + upi inputs for the seller */}
             {!amIBuyer ? (
               <>
-                {/* 1. Contact Info Card (Edit Mode OR Display Mode) */}
-                {(!roomDetails?.seller_upi || isEditingContact) ? (
+                {(!roomDetails?.seller_upi || !roomDetails?.seller_phone || isEditingContact) ? (
                   <div className="flex flex-col gap-2 w-full mb-3 p-3 bg-white rounded-xl shadow-inner border border-gray-100">
-                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Share your UPI ID to get paid:</p>
-                    <input type="text" value={contactUpiInput} onChange={(e) => setContactUpiInput(e.target.value)} placeholder="e.g. 9876543210@ybl" className="px-4 py-2.5 text-xs font-bold bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Confirm Deal & Get Paid:</p>
+                    <input type="text" value={contactUpiInput} onChange={(e) => setContactUpiInput(e.target.value)} placeholder="UPI ID (e.g. 9876543210@ybl)" className="px-4 py-2.5 text-xs font-bold bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
+                    <input type="tel" value={contactPhoneInput} onChange={(e) => setContactPhoneInput(e.target.value)} placeholder="Phone Number (For Pickup)" className="px-4 py-2.5 text-xs font-bold bg-gray-50 border border-gray-200 rounded-xl outline-none focus:ring-2 focus:ring-green-500" />
                     <label className="flex items-center gap-2 mt-1 cursor-pointer">
                       <input type="checkbox" checked={saveAsDefault} onChange={(e) => setSaveAsDefault(e.target.checked)} className="w-3.5 h-3.5 text-green-600 rounded border-gray-300" />
                       <span className="text-[10px] font-bold text-gray-500">Save as my default for future deals</span>
@@ -882,23 +861,25 @@ export default function ChatRoomPage() {
                     <div className="flex gap-2 mt-1">
                       {isEditingContact && roomDetails?.seller_upi && <button onClick={() => setIsEditingContact(false)} className="flex-1 py-2.5 bg-gray-200 text-gray-700 text-xs font-bold rounded-xl">Cancel</button>}
                       <button 
-                        disabled={!contactUpiInput || isSavingContact}
+                        disabled={!contactUpiInput || !contactPhoneInput || isSavingContact}
                         onClick={async () => {
                           setIsSavingContact(true);
-                          try { await saveChatContactInfo(roomId, { upi_id: contactUpiInput, save_as_default: saveAsDefault }); setIsEditingContact(false); } catch(e) { alert("Failed to save."); } finally { setIsSavingContact(false); }
+                          try { await saveChatContactInfo(roomId, { upi_id: contactUpiInput, phone: contactPhoneInput, save_as_default: saveAsDefault }); setIsEditingContact(false); } catch(e) { alert("Failed to save."); } finally { setIsSavingContact(false); }
                         }} 
                         className="flex-[2] py-2.5 bg-green-600 text-white text-xs font-bold rounded-xl shadow-sm hover:bg-green-700 disabled:opacity-50"
-                      >Save & Request Payment</button>
+                      >Confirm Deal & Share Contact</button>
                     </div>
                   </div>
                 ) : (
                   <div className="flex justify-between items-center bg-white/50 px-3 py-2 rounded-lg border border-green-200/50 mb-3">
-                    <span className="text-[10px] font-bold text-gray-600">Receiving payment at: <strong className="text-gray-900">{roomDetails.seller_upi}</strong></span>
-                    <button onClick={() => { setContactUpiInput(roomDetails.seller_upi); setIsEditingContact(true); }} className="text-[10px] font-black text-blue-600 hover:text-blue-800 flex items-center gap-1">✏️ Edit</button>
+                    <div className="flex flex-col gap-1">
+                       <span className="text-[10px] font-bold text-gray-600">Receiving payment at: <strong className="text-gray-900">{roomDetails.seller_upi}</strong></span>
+                       <span className="text-[10px] font-bold text-gray-600">Shared Phone: <strong className="text-gray-900">{roomDetails.seller_phone}</strong></span>
+                    </div>
+                    <button onClick={() => { setContactUpiInput(roomDetails.seller_upi); setContactPhoneInput(roomDetails.seller_phone); setIsEditingContact(true); }} className="text-[10px] font-black text-blue-600 hover:text-blue-800 flex items-center gap-1 shrink-0">✏️ Edit</button>
                   </div>
                 )}
                 
-                {/* 2. Action Buttons (Buyer Contact) */}
                 <div className="flex gap-2 w-full">
                   {otherPersonPhone ? (
                     <>
@@ -913,10 +894,7 @@ export default function ChatRoomPage() {
                 </div>
               </>
             ) : (
-            
-            /* --- BUYER'S DEAL HUB --- */
               <>
-                {/* 1. Contact Info Card (Edit Mode OR Display Mode) */}
                 {(!roomDetails?.buyer_phone || isEditingContact) ? (
                   <div className="flex flex-col gap-2 w-full mb-3 p-3 bg-white rounded-xl shadow-inner border border-gray-100">
                     <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest mb-1">Share your phone number for pickup:</p>
@@ -944,7 +922,6 @@ export default function ChatRoomPage() {
                   </div>
                 )}
 
-                {/* 2. Action Buttons (Seller Contact & Pay) */}
                 <div className="flex gap-2 w-full">
                   {otherPersonPhone ? (
                     <>
@@ -968,8 +945,6 @@ export default function ChatRoomPage() {
             )}
           </div>
         )}
-
-        {/* Input Blocking Logic & The Main Input Form */}
         
         {roomStatus === 'resolved' && (
           <div className="mb-3 py-3 px-6 bg-blue-50 border border-blue-200 rounded-2xl text-center shadow-inner">
@@ -987,11 +962,10 @@ export default function ChatRoomPage() {
         ) : (
           <form onSubmit={(e) => handleSendMessage(e)} className="flex flex-col">
              
-             {/* Upper Actions Row: Compact & Balanced */}
              <div className="flex items-center justify-between px-1 mb-2 mt-0">
                
-               {/* Custom Minimalist Checkbox */}
-               {!isSupport && !isGroupOrder && roomStatus !== 'sold' && ( 
+               {/* 🚨 THE COUNTER-OFFER FIX: The offer UI checkbox is completely hidden from the seller */}
+               {amIBuyer && !isSupport && !isGroupOrder && roomStatus !== 'sold' && ( 
                  <label className="flex items-center gap-2 cursor-pointer group">
                    <div className="relative flex items-center justify-center">
                      <input 
@@ -1006,26 +980,24 @@ export default function ChatRoomPage() {
                      </svg>
                    </div>
                    <span className="text-[11px] font-bold text-gray-500 group-hover:text-gray-800 transition select-none uppercase tracking-wide">
-                     Make Official Bid
+                     Make an Offer
                    </span>
                  </label>
                )}
 
-               {/* Quiet Ghost Button for Contact */}
                {!isSupport && !isGroupOrder && roomStatus !== 'sold' && profile?.phone && (
                  <button 
                    type="button" 
                    onClick={() => handleSendMessage(undefined, `[CONTACT_CARD]:${profile.phone}`)} 
-                   className="text-[10px] font-bold text-gray-500 hover:text-blue-600 transition flex items-center gap-1 bg-gray-100 hover:bg-blue-50 px-2.5 py-1.5 rounded-lg border border-gray-200"
+                   className="text-[10px] font-bold text-gray-500 hover:text-blue-600 transition flex items-center gap-1 bg-gray-100 hover:bg-blue-50 px-2.5 py-1.5 rounded-lg border border-gray-200 ml-auto"
                  >
-                   🪪 Share My Contact Card
+                   🪪 Share Contact Card
                  </button>
                )}
              </div>
              
-             {/* Input Area */}
              <div className="flex gap-2 items-center">
-                {isBidding && !isSupport && !isGroupOrder && roomStatus !== 'sold' && (
+                {isBidding && amIBuyer && !isSupport && !isGroupOrder && roomStatus !== 'sold' && (
                   <div className="relative flex items-center shrink-0">
                     <span className="absolute left-3.5 text-gray-500 font-bold pointer-events-none select-none">₹</span>
                     <input 
@@ -1041,7 +1013,7 @@ export default function ChatRoomPage() {
                 
                 <input 
                   type="text" 
-                  placeholder={isSelectionMode ? "Exit selection mode to type..." : (isBidding ? "Add a note to your bid..." : "Message...")} 
+                  placeholder={isSelectionMode ? "Exit selection mode to type..." : (isBidding ? "Add a note to your offer..." : "Message...")} 
                   value={newMessage} 
                   onChange={(e) => setNewMessage(e.target.value)} 
                   disabled={isSelectionMode} 
@@ -1060,7 +1032,6 @@ export default function ChatRoomPage() {
         )}
       </div>
 
-      {/* 🚨 THE REPORT MODAL */}
       {reportingListing && (
         <ReportModal
           listingId={reportingListing.id}

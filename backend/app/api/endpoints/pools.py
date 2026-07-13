@@ -3,12 +3,17 @@ from pydantic import BaseModel, HttpUrl
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import uuid
+import json  # Required for ultra-fast Redis caching
 
 from app.core.security import get_current_user
 from app.core.firebase import db, firestore
 from google.cloud.firestore import ArrayUnion, ArrayRemove
 
 router = APIRouter()
+
+# 🚨 Cache Constants
+CACHE_KEY_OPEN_POOLS = "cache:open_pools"
+CACHE_TTL_SECONDS = 300  # 5 minutes
 
 # ==========================================
 # HYBRID SCHEMAS
@@ -18,8 +23,8 @@ class PoolCreate(BaseModel):
     pickup_location: str
     contact_number: str
     expires_in_minutes: int
-    upi_id: str                 # 🚨 REQUIRED for automatic split payments
-    cart_link: str = ""         # 🚨 NEW: Optional Master Cart Link
+    upi_id: str                 
+    cart_link: str = ""         
     special_instructions: str = ""
 
 class PoolItem(BaseModel):
@@ -30,18 +35,17 @@ class PoolItem(BaseModel):
 class PoolJoin(BaseModel):
     contact_number: str
     block: str = ""
-    cart_link: str = ""         # 🚨 NEW: The Link-First approach
-    items: List[PoolItem] = []  # Fallback for manual typed items
+    cart_link: str = ""         
+    items: List[PoolItem] = []  
 
 class PoolStatusUpdate(BaseModel):
     status: str 
-    delivery_fee: float = 0.0   # Delivery fee to split among participants
-    eta_minutes: int = 0        # 🚨 NEW: Added for the Global Tracker Pill
+    delivery_fee: float = 0.0   
+    eta_minutes: int = 0        
 
 class ParticipantPriceUpdate(BaseModel):
     new_price: float
 
-# 🚨 NEW: Schema for Live Instructions Board
 class HostInstructionsUpdate(BaseModel):
     instructions: str
 
@@ -50,35 +54,65 @@ class HostInstructionsUpdate(BaseModel):
 # GET FEEDS (Active & Past)
 # ==========================================
 @router.get("/")
-async def get_active_pools(current_user: dict = Depends(get_current_user)):
-    """Fetches Open public pools AND any pool (Locked/Delivered) the user is involved in."""
+async def get_active_pools(request: Request, current_user: dict = Depends(get_current_user)):
+    """Fetches Open public pools safely via Redis Cache AND live personal pools directly from Firestore."""
     try:
         uid = current_user["uid"]
         active_pools = {}
         now = datetime.now(timezone.utc)
         
-        # 1. Get ALL Open Pools (For the Discover Feed)
-        open_pools = db.collection("group_orders").where("status", "==", "open").stream()
-        for p in open_pools:
-            pool_data = p.to_dict()
-            pool_data["id"] = p.id
+        # Safely grab the redis client
+        redis_client = getattr(request.app.state, "redis", None)
+
+        # 🚨 CACHE-ASIDE PATTERN WITH FAILSAFE OVERRIDE
+        open_pools_list = []
+        cached_data = None
+        
+        if redis_client:
+            try:
+                cached_data = await redis_client.get(CACHE_KEY_OPEN_POOLS)
+            except Exception as e:
+                print(f"⚠️ Redis is down! Falling back to Firestore. Error: {e}")
+
+        if cached_data:
+            # Cache hit: Loads from RAM in 2ms
+            open_pools_list = json.loads(cached_data)
+        else:
+            # Cache miss: Reads from Firestore and repopulates the cache
+            open_pools_stream = db.collection("group_orders").where("status", "==", "open").stream()
+            for p in open_pools_stream:
+                pool_data = p.to_dict()
+                pool_data["id"] = p.id
+                
+                expires_at = datetime.fromisoformat(pool_data["expires_at"].replace("Z", "+00:00"))
+                if expires_at < now:
+                    db.collection("group_orders").document(p.id).update({"status": "locked"})
+                    pool_data["status"] = "locked" 
+                
+                # Sanitize native datetime objects to strings so JSON doesn't crash
+                for key, val in pool_data.items():
+                    if isinstance(val, datetime):
+                        pool_data[key] = val.isoformat()
+                        
+                open_pools_list.append(pool_data)
             
-            # Check expiration locally
-            expires_at = datetime.fromisoformat(pool_data["expires_at"].replace("Z", "+00:00"))
-            if expires_at < now:
-                db.collection("group_orders").document(p.id).update({"status": "locked"})
-                pool_data["status"] = "locked" 
+            # Save the clean list to Redis memory (with failsafe)
+            if redis_client:
+                try:
+                    await redis_client.setex(CACHE_KEY_OPEN_POOLS, CACHE_TTL_SECONDS, json.dumps(open_pools_list))
+                except Exception as e:
+                    print(f"⚠️ Redis write failed. Error: {e}")
+
+        for pool in open_pools_list:
+            active_pools[pool["id"]] = pool
             
-            active_pools[p.id] = pool_data
-            
-        # 2. Get Locked/Delivered Pools where I am the HOST
+        # 🚨 THE LIVE PERSONAL OVERRIDE: Fetch personal hosted/joined directly so the UI never feels laggy
         hosted_pools = db.collection("group_orders").where("host_id", "==", uid).where("status", "in", ["locked", "delivered"]).stream()
         for p in hosted_pools:
             pool_data = p.to_dict()
             pool_data["id"] = p.id
             active_pools[p.id] = pool_data
             
-        # 3. Get Locked/Delivered Pools where I am a JOINER
         joined_pools = db.collection("group_orders").where("participant_ids", "array_contains", uid).where("status", "in", ["locked", "delivered"]).stream()
         for p in joined_pools:
             pool_data = p.to_dict()
@@ -133,14 +167,13 @@ async def get_past_pools(
 # CREATE & JOIN
 # ==========================================
 @router.post("/")
-async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends(get_current_user)):
+async def create_group_order(pool_data: PoolCreate, request: Request, current_user: dict = Depends(get_current_user)):
     try:
         pool_id = f"pool_{uuid.uuid4().hex[:12]}"
         chat_room_id = f"room_{uuid.uuid4().hex[:12]}"
         expires_at = datetime.now(timezone.utc) + timedelta(minutes=pool_data.expires_in_minutes)
         user_name = current_user.get("name", current_user.get("email", "Campus Member").split("@")[0])
 
-        # Initialize the Group Chat
         chat_data = {
             "type": "group_order", 
             "pool_id": pool_id, 
@@ -156,7 +189,6 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
         }
         db.collection("chat_rooms").document(chat_room_id).set(chat_data)
 
-        # Initialize the Pool
         new_pool = {
             "host_id": current_user["uid"], "host_name": user_name, "app_name": pool_data.app_name,
             "pickup_location": pool_data.pickup_location, "contact_number": pool_data.contact_number,
@@ -167,11 +199,26 @@ async def create_group_order(pool_data: PoolCreate, current_user: dict = Depends
             "status": "open", "expires_at": expires_at.isoformat(), "chat_room_id": chat_room_id,
             "participants": [], 
             "participant_ids": [current_user["uid"]],
-            "host_instructions": "", # 🚨 NEW: Field for broadcast updates
+            "host_instructions": "", 
             "created_at": datetime.now(timezone.utc).isoformat()
         }
         db.collection("group_orders").document(pool_id).set(new_pool)
         new_pool["id"] = pool_id
+
+        # 🚨 THE FIX: Invalidate Cache & Broadcast the FCM Topic (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+                await request.app.state.redis.enqueue_job(
+                    'broadcast_new_pool_topic',
+                    pool_id,
+                    pool_data.app_name,
+                    user_name,
+                    pool_data.pickup_location
+                )
+            except Exception as e:
+                print(f"⚠️ Redis broadcast failed. Error: {e}")
+
         return new_pool
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -206,22 +253,15 @@ async def join_group_order(
             "added_at": datetime.now(timezone.utc).isoformat()
         }
 
-        # Update Pool Data
         pool_ref.update({
             "participants": ArrayUnion([new_participant]),
             "participant_ids": ArrayUnion([current_user["uid"]])
         })
         
-        # Add to Chat Room & Send System Message
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         chat_ref.update({"participants": ArrayUnion([current_user["uid"]])})
         
-        added_text = ""
-        if payload.cart_link:
-            added_text = f"Added a Shared Cart Link: {payload.cart_link}"
-        else:
-            items_str = ", ".join([f"{i.quantity}x {i.item_name}" for i in payload.items])
-            added_text = f"Added manually: {items_str} (Est. ₹{total_price})"
+        added_text = f"Added a Shared Cart Link: {payload.cart_link}" if payload.cart_link else f"Added manually: {', '.join([f'{i.quantity}x {i.item_name}' for i in payload.items])} (Est. ₹{total_price})"
 
         msg = f"👋 {user_name} joined from {payload.block}!\n{added_text}"
         chat_ref.collection("messages").add({
@@ -230,14 +270,20 @@ async def join_group_order(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        if pool.get("host_id") and pool["host_id"] != current_user["uid"]:
-            await request.app.state.redis.enqueue_job(
-                'process_push_notification',
-                pool["host_id"], 
-                f"🛒 Someone joined your {pool['app_name']} pool!", 
-                f"{user_name} just added items to your order list.", 
-                f"/chat/{pool['chat_room_id']}" 
-            )
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+                if pool.get("host_id") and pool["host_id"] != current_user["uid"]:
+                    await request.app.state.redis.enqueue_job(
+                        'process_push_notification',
+                        pool["host_id"], 
+                        f"🛒 Someone joined your {pool['app_name']} pool!", 
+                        f"{user_name} just added items to your order list.", 
+                        f"/chat/{pool['chat_room_id']}" 
+                    )
+            except Exception as e:
+                print(f"⚠️ Redis notification enqueue failed. Error: {e}")
 
         return {"message": "Joined successfully!"}
     except HTTPException: raise
@@ -264,8 +310,6 @@ async def update_my_cart(
 
         uid = current_user["uid"]
         participants = pool.get("participants", [])
-
-        # Find the user's specific entry in the array
         participant_index = next((i for i, p in enumerate(participants) if p["user_id"] == uid), None)
         if participant_index is None:
             raise HTTPException(status_code=404, detail="You are not in this order.")
@@ -273,7 +317,6 @@ async def update_my_cart(
         user_name = participants[participant_index]["user_name"]
         total_price = sum(item.estimated_price * item.quantity for item in payload.items)
 
-        # Update their specific data
         participants[participant_index].update({
             "contact_number": payload.contact_number,
             "block": payload.block,
@@ -287,7 +330,6 @@ async def update_my_cart(
             "updated_at": firestore.SERVER_TIMESTAMP
         })
 
-        # Send an automated chat message about the update
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         added_text = f"Updated to Shared Cart Link: {payload.cart_link}" if payload.cart_link else f"Updated manual items (Est. ₹{total_price})"
         msg = f"🔄 {user_name} updated their cart!\n{added_text}"
@@ -298,8 +340,14 @@ async def update_my_cart(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        return {"message": "Cart updated successfully!"}
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+            except Exception as e:
+                print(f"⚠️ Redis delete failed. Error: {e}")
 
+        return {"message": "Cart updated successfully!"}
     except HTTPException: raise
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
@@ -329,7 +377,6 @@ async def update_pool_status(
             "updated_at": firestore.SERVER_TIMESTAMP
         }
         
-        # Send Automated Bot Message
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         system_text = ""
         push_title = ""
@@ -341,7 +388,6 @@ async def update_pool_status(
             push_title = f"🔒 {pool['app_name']} Pool Locked!"
             push_body = f"The host is checking out your cart items now.{fee_text}"
             
-            # 🚨 THE ETA CALCULATION
             if payload.eta_minutes > 0:
                 arrival_time = datetime.now(timezone.utc) + timedelta(minutes=payload.eta_minutes)
                 update_data["estimated_arrival_time"] = arrival_time.isoformat()
@@ -356,11 +402,9 @@ async def update_pool_status(
             system_text = "❌ The Host has cancelled this group order."
             push_title = f"❌ {pool['app_name']} Pool Cancelled"
             push_body = "The host has closed this pool. Your item requests have been cancelled."
-            # THE SELF-DESTRUCT TIMER (24 Hours from now)
             delete_at = datetime.now(timezone.utc) + timedelta(hours=24)
             update_data["delete_at"] = delete_at    
 
-        # Write updates to database
         pool_ref.update(update_data)    
 
         if system_text:
@@ -370,24 +414,28 @@ async def update_pool_status(
             })
             chat_ref.update({"last_message": system_text, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER REDIS ALERTS TO ALL JOINERS IN THE BACKGROUND
-        participant_ids = pool.get("participant_ids", [])
-        if participant_ids and push_title:
-            for uid in participant_ids:
-                if uid != current_user["uid"]: # Don't notify the host themselves
-                    await request.app.state.redis.enqueue_job(
-                        'process_push_notification',
-                        uid,
-                        push_title,
-                        push_body,
-                        f"/chat/{pool['chat_room_id']}"
-                    )
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+                participant_ids = pool.get("participant_ids", [])
+                if participant_ids and push_title:
+                    for uid in participant_ids:
+                        if uid != current_user["uid"]:
+                            await request.app.state.redis.enqueue_job(
+                                'process_push_notification',
+                                uid,
+                                push_title,
+                                push_body,
+                                f"/chat/{pool['chat_room_id']}"
+                            )
+            except Exception as e:
+                print(f"⚠️ Redis notification enqueue failed. Error: {e}")
 
         return {"status": payload.status}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
-# 🚨 NEW: The INSTRUCTIONS UPDATE Route (Replaces Tracking Route)
 @router.put("/{pool_id}/instructions", tags=["Group Orders"])
 async def update_host_instructions(
     pool_id: str, 
@@ -395,7 +443,6 @@ async def update_host_instructions(
     request: Request,
     current_user: dict = Depends(get_current_user)
 ):
-    """Allows the Host to broadcast instructions/updates to all users globally."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
@@ -407,13 +454,11 @@ async def update_host_instructions(
         if pool["host_id"] != current_user["uid"]:
             raise HTTPException(status_code=403, detail="Only the Host can broadcast instructions.")
 
-        # Update the database
         pool_ref.update({
             "host_instructions": payload.instructions,
             "updated_at": firestore.SERVER_TIMESTAMP
         })
 
-        # Drop a notification in the group chat
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         msg = f"📢 Host Update: {payload.instructions}"
         
@@ -425,25 +470,27 @@ async def update_host_instructions(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 Send Push Notification to all joiners
-        participant_ids = pool.get("participant_ids", [])
-        if participant_ids:
-            for uid in participant_ids:
-                if uid != current_user["uid"]:
-                    await request.app.state.redis.enqueue_job(
-                        'process_push_notification',
-                        uid,
-                        f"📢 Update for {pool['app_name']} Pool",
-                        payload.instructions,
-                        f"/chat/{pool['chat_room_id']}"
-                    )
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+                participant_ids = pool.get("participant_ids", [])
+                if participant_ids:
+                    for uid in participant_ids:
+                        if uid != current_user["uid"]:
+                            await request.app.state.redis.enqueue_job(
+                                'process_push_notification',
+                                uid,
+                                f"📢 Update for {pool['app_name']} Pool",
+                                payload.instructions,
+                                f"/chat/{pool['chat_room_id']}"
+                            )
+            except Exception as e:
+                print(f"⚠️ Redis notification enqueue failed. Error: {e}")
 
         return {"message": "Instructions broadcasted successfully!"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/{pool_id}/participants/{user_id}/price")
@@ -454,44 +501,35 @@ async def update_participant_price(
     request: Request,
     current_user: dict = Depends(get_current_user)
 ):
-    """Allows the Host to securely override a joiner's total cart value based on the final app checkout."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
-        if not pool_doc.exists:
-            raise HTTPException(status_code=404, detail="Order not found.")
+        if not pool_doc.exists: raise HTTPException(status_code=404, detail="Order not found.")
 
         pool = pool_doc.to_dict()
 
-        # Security: Only the Host can edit prices
         if pool.get("host_id") != current_user["uid"]:
             raise HTTPException(status_code=403, detail="Only the Host can edit participant prices.")
 
-        # Find the specific participant
         participants = pool.get("participants", [])
         target_participant = next((p for p in participants if p["user_id"] == user_id), None)
 
         if not target_participant:
             raise HTTPException(status_code=404, detail="Participant not found in this order.")
 
-        # Save old price for transparency logging
         old_price = target_participant.get("total_estimated_price", 0)
         target_participant["total_estimated_price"] = payload.new_price
 
-        # Push back the modified array
         pool_ref.update({
             "participants": participants,
             "updated_at": datetime.now(timezone.utc).isoformat()
         })
 
-        # Send Transparency Audit Message to the Group Chat
         chat_ref = db.collection("chat_rooms").document(pool["chat_room_id"])
         msg = f"🤖 Note: The Host updated {target_participant['user_name']}'s total from ₹{old_price} to ₹{payload.new_price} based on the final checkout."
         
         chat_ref.collection("messages").add({
-            "sender_id": "system",
-            "sender_name": "Cart Pool Bot",
-            "text": msg,
+            "sender_id": "system", "sender_name": "Cart Pool Bot", "text": msg,
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         chat_ref.update({
@@ -499,12 +537,16 @@ async def update_participant_price(
             "updated_at": datetime.now(timezone.utc).isoformat()
         })
 
-        return {"message": "Participant price updated successfully.", "new_price": payload.new_price}
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+            except Exception as e:
+                print(f"⚠️ Redis delete failed. Error: {e}")
 
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"message": "Participant price updated successfully.", "new_price": payload.new_price}
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.delete("/{pool_id}/participants/{user_id}")
@@ -514,20 +556,16 @@ async def kick_participant(
     request: Request, 
     current_user: dict = Depends(get_current_user)
 ):
-    """Allows the Host to remove a user from an open group order."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
-        if not pool_doc.exists: 
-            raise HTTPException(status_code=404, detail="Order not found.")
+        if not pool_doc.exists: raise HTTPException(status_code=404, detail="Order not found.")
         
         pool = pool_doc.to_dict()
         
-        # Security: Only the Host can kick people
         if pool["host_id"] != current_user["uid"]:
             raise HTTPException(status_code=403, detail="Only the Host can remove participants.")
             
-        # Security: Cannot kick after the order is locked
         if pool["status"] != "open":
             raise HTTPException(status_code=400, detail="Cannot remove users after the order is locked.")
 
@@ -551,28 +589,28 @@ async def kick_participant(
 
         msg = f"🚫 {kicked_user['user_name']} was removed from the order."
         chat_ref.collection("messages").add({
-            "sender_id": "system", 
-            "sender_name": "Cart Pool Bot", 
-            "text": msg, 
+            "sender_id": "system", "sender_name": "Cart Pool Bot", "text": msg, 
             "timestamp": datetime.now(timezone.utc).isoformat()
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        # 🚨 TRIGGER REDIS BACKGROUND ALERT TO THE KICKED USER
-        await request.app.state.redis.enqueue_job(
-            'process_push_notification',
-            user_id,
-            f"🚫 Removed from {pool['app_name']} Pool",
-            "The host has removed you from the active cart order list.",
-            "/inbox"
-        )
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+                await request.app.state.redis.enqueue_job(
+                    'process_push_notification',
+                    user_id,
+                    f"🚫 Removed from {pool['app_name']} Pool",
+                    "The host has removed you from the active cart order list.",
+                    "/inbox"
+                )
+            except Exception as e:
+                print(f"⚠️ Redis operation failed. Error: {e}")
 
         return {"message": f"Successfully removed {kicked_user['user_name']}"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: raise
+    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{pool_id}/settle")
@@ -581,7 +619,6 @@ async def settle_group_order(
     request: Request, 
     current_user: dict = Depends(get_current_user)
 ):
-    """Closes the order and archives it."""
     try:
         pool_ref = db.collection("group_orders").document(pool_id)
         pool_doc = pool_ref.get()
@@ -608,17 +645,23 @@ async def settle_group_order(
         })
         chat_ref.update({"last_message": msg, "updated_at": datetime.now(timezone.utc).isoformat()})
 
-        participant_ids = pool.get("participant_ids", [])
-        if participant_ids:
-            for uid in participant_ids:
-                if uid != current_user["uid"]: 
-                    await request.app.state.redis.enqueue_job(
-                        'process_push_notification',
-                        uid,
-                        f"✅ {pool['app_name']} Pool Settled",
-                        "The host has officially closed the order. Thanks for pooling!",
-                        "/inbox"
-                    )
+        # 🚨 THE FIX: Invalidate Cache (with failsafe)
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.delete(CACHE_KEY_OPEN_POOLS)
+                participant_ids = pool.get("participant_ids", [])
+                if participant_ids:
+                    for uid in participant_ids:
+                        if uid != current_user["uid"]: 
+                            await request.app.state.redis.enqueue_job(
+                                'process_push_notification',
+                                uid,
+                                f"✅ {pool['app_name']} Pool Settled",
+                                "The host has officially closed the order. Thanks for pooling!",
+                                "/inbox"
+                            )
+            except Exception as e:
+                print(f"⚠️ Redis operation failed. Error: {e}")
 
         return {"message": "Order settled successfully."}
     except HTTPException: raise

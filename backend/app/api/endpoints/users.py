@@ -10,6 +10,7 @@ from app.utils.email import send_otp_email
 from app.core.security import get_current_user, get_verified_student, get_active_user 
 from app.services.user_service import UserService
 from app.core.firebase import db
+from firebase_admin import messaging  # 🚨 NEW: Required for FCM Topic Subscriptions
 
 router = APIRouter()
 
@@ -24,10 +25,13 @@ class VerifyOtpRequest(BaseModel):
     srm_email: EmailStr
     otp_code: str
 
-# 🚨 NEW MODEL: For updating Dashboard Defaults
 class StudentProfileUpdate(BaseModel):
     phone: Optional[str] = None
     upi_id: Optional[str] = None
+
+# 🚨 NEW MODEL: Strict validation for the token
+class FCMTokenRequest(BaseModel):
+    fcm_token: str
 
 
 # --- SYNC & PROFILE ENDPOINTS ---
@@ -242,8 +246,7 @@ async def get_student_dashboard(student: dict = Depends(get_verified_student)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# 🚨 NEW ROUTE: Save Dashboard Defaults
-@router.put("/profile/contact", tags=["Users"])
+@router.put("/profile/contact", tags=["User Management"])
 async def update_student_contact(payload: StudentProfileUpdate, user: dict = Depends(get_verified_student)):
     try:
         uid = user.get("uid")
@@ -256,3 +259,21 @@ async def update_student_contact(payload: StudentProfileUpdate, user: dict = Dep
         return {"message": "Defaults updated successfully!"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==========================================
+# 🔔 NOTIFICATIONS (FCM TOPIC SUBSCRIPTION)
+# ==========================================
+
+@router.post("/notifications/subscribe", tags=["User Management"])
+async def subscribe_fcm_topic(payload: FCMTokenRequest, current_user: dict = Depends(get_current_user)):
+    """Subscribes a web browser FCM token to the global campus broadcast channel."""
+    try:
+        # The Admin SDK automatically forces the token to subscribe to the topic
+        response = messaging.subscribe_to_topic([payload.fcm_token], "campus_active_pools")
+        
+        return {"message": "Subscribed to campus pools successfully.", "status": "success"}
+    except Exception as e:
+        print(f"Topic Subscription Failed: {e}")
+        # Return 500 but don't crash the app if Firebase acts up
+        raise HTTPException(status_code=500, detail="Failed to subscribe token to topic.")

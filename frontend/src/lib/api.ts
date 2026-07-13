@@ -1045,3 +1045,15 @@ export const updateHostInstructions = async (poolId: string, instructions: strin
   }
   return res.json();
 };
+
+// Add this to @/lib/api.ts
+export async function fetchActivePools() {
+  // Note: Adjust '/api/group_orders' if you mounted the router at a different path (like '/api/pools')
+  const response = await authenticatedFetch(`${API_URL}/api/pools`, {
+    method: 'GET',
+    cache: 'no-store' 
+  });
+
+  if (!response.ok) throw new Error('Failed to load active pools');
+  return await response.json();
+}
