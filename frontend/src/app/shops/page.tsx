@@ -95,7 +95,7 @@ export default function ShopsDirectoryPage() {
                   className="bg-white rounded-3xl p-6 border border-gray-100 shadow-sm hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group flex flex-col h-full"
                 >
                   <div className="flex items-start justify-between mb-4">
-                    <div className="w-16 h-16 bg-gradient-to-br from-blue-50 to-indigo-50 text-blue-600 rounded-2xl flex items-center justify-center font-black text-2xl uppercase tracking-tighter border border-blue-100/50 shadow-inner group-hover:scale-105 transition-transform">
+                    <div className="w-16 h-16 bg-gradient-to-br from-blue-50 to-indigo-50 text-blue-600 rounded-2xl flex items-center justify-center font-black text-2xl uppercase tracking-tighter border border-blue-100/50 shadow-inner group-hover:scale-105 transition-transform flex-shrink-0">
                       {shop.shop_name ? shop.shop_name.substring(0, 2) : 'SH'}
                     </div>
                     
@@ -120,7 +120,18 @@ export default function ShopsDirectoryPage() {
                       {shop.shop_name || shop.name}
                     </h3>
                     
-                    <p className="text-sm text-gray-500 mt-2 line-clamp-2 font-medium">
+                    {/* 📍 AESTHETIC SHOP LOCATION / ADDRESS */}
+                    {(shop.location || shop.block) && (
+                      <div className="flex items-center gap-1.5 mt-1.5 text-gray-400">
+                        <svg className="w-4 h-4 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                        <span className="text-xs font-bold truncate tracking-wide">{shop.location || shop.block}</span>
+                      </div>
+                    )}
+                    
+                    <p className="text-sm text-gray-500 mt-2.5 line-clamp-2 font-medium">
                       {shop.tagline || shop.description}
                     </p>
 
@@ -149,13 +160,6 @@ export default function ShopsDirectoryPage() {
                     <span className="bg-gray-50 text-gray-500 px-3 py-1.5 rounded-lg border border-gray-100">
                       {catalogCount} {catalogCount === 1 ? 'Service' : 'Services'}
                     </span>
-
-                    {shop.block && (
-                      <span className="flex items-center gap-1 text-gray-400">
-                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
-                        {shop.block}
-                      </span>
-                    )}
                   </div>
                 </Link>
               );
