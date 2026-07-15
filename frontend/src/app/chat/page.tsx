@@ -7,7 +7,7 @@ import { hideChatRoom, getPastPools, getMyTickets } from '@/lib/api';
 import Link from 'next/link';
 
 // 🚨 IMPORT THE NEW GLOBAL ENGINE
-import { useGlobalInbox } from '@/context/InboxContest'; 
+import { useGlobalInbox } from '@/context/InboxContext'; 
 
 type InboxTab = 'buying' | 'selling' | 'support' | 'pools'; 
 
