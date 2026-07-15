@@ -1046,12 +1046,19 @@ export const updateHostInstructions = async (poolId: string, instructions: strin
   return res.json();
 };
 
-// Add this to @/lib/api.ts
+
+
 export async function fetchActivePools() {
-  // Note: Adjust '/api/group_orders' if you mounted the router at a different path (like '/api/pools')
-  const response = await authenticatedFetch(`${API_URL}/api/pools`, {
+  // 🚨 THE FIX: The Cache Buster
+  // Adding ?t=${Date.now()} ensures the URL is completely unique every time,
+  // bypassing Next.js's extremely aggressive default caching.
+  const response = await authenticatedFetch(`${API_URL}/api/pools?t=${Date.now()}`, {
     method: 'GET',
-    cache: 'no-store' 
+    cache: 'no-store',
+    headers: {
+      'Cache-Control': 'no-cache',
+      'Pragma': 'no-cache'
+    }
   });
 
   if (!response.ok) throw new Error('Failed to load active pools');

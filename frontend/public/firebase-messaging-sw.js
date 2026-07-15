@@ -1,7 +1,7 @@
+// public/firebase-messaging-sw.js
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js');
 importScripts('https://www.gstatic.com/firebasejs/10.8.0/firebase-messaging-compat.js');
 
-// 🚨 THE FIX: Force the service worker to activate immediately
 self.addEventListener('install', function(event) {
   self.skipWaiting();
 });
@@ -10,7 +10,6 @@ self.addEventListener('activate', function(event) {
   event.waitUntil(clients.claim());
 });
 
-// Public configuration (Safe to be visible to clients)
 const firebaseConfig = {
   apiKey: "AIzaSyDRUWONmzZ2fMUmlRF0oSfY5i46Y8rpuoM",
   authDomain: "srm-marketplace-c5035.firebaseapp.com",
@@ -22,7 +21,6 @@ const firebaseConfig = {
 
 firebase.initializeApp(firebaseConfig);
 
-// 🚨 OPTIMIZATION: Native Push Event avoids FCM wrapper overhead
 self.addEventListener('push', function(event) {
   if (!event.data) return;
 
@@ -37,13 +35,19 @@ self.addEventListener('push', function(event) {
     data: { url: customData.url || '/inbox' }
   };
 
-  // ROBUSTNESS: Ensure OS waits for paint before sleeping
   event.waitUntil(
-    self.registration.showNotification(notificationTitle, notificationOptions)
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
+      for (const client of clientList) {
+        client.postMessage({
+          type: 'BACKGROUND_REFRESH',
+          payload: customData
+        });
+      }
+      return self.registration.showNotification(notificationTitle, notificationOptions);
+    })
   );
 });
 
-// ROBUSTNESS: Smart routing upon click
 self.addEventListener('notificationclick', function(event) {
   event.notification.close();
 
@@ -52,14 +56,12 @@ self.addEventListener('notificationclick', function(event) {
 
   event.waitUntil(
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clientList) => {
-      // Bring existing tab to front if already open
       for (const client of clientList) {
         if (client.url.includes(self.location.origin) && 'focus' in client) {
           client.navigate(targetUrl);
           return client.focus();
         }
       }
-      // Otherwise, open a fresh window
       if (clients.openWindow) {
         return clients.openWindow(targetUrl);
       }

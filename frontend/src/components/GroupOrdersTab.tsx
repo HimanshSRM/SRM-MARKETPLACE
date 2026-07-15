@@ -21,14 +21,12 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import GuestBlockerModal from '@/components/GuestBlockerModal'; 
 
-// --- MAGIC PASTE HELPER ---
 const extractUrl = (text: string) => {
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   const match = text.match(urlRegex);
   return match ? match[0] : text;
 };
 
-// --- INTERFACES ---
 interface PoolItem { item_name: string; quantity: number; estimated_price: number; }
 interface Participant { user_id: string; user_name: string; contact_number: string; block?: string; cart_link?: string; items: PoolItem[]; total_estimated_price: number; } 
 interface GroupOrder {
@@ -62,7 +60,6 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  // --- PAST POOLS FETCHER ---
   const fetchPastOrders = async (cursor = '', reset = false) => {
     if (!currentUser?.uid || profile?.role === 'guest') return;
     setIsLoadingPast(true);
@@ -89,7 +86,6 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
     fetchPastOrders('', true);
   }, [currentUser?.uid, profile?.role]);
 
-  // --- DISCOVER FEED FETCHER (Cached via Redis) ---
   const loadDiscoverPools = async () => {
     if (!currentUser?.uid || profile?.role === 'guest') return;
     try {
@@ -106,17 +102,40 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
     }
   };
 
-  // --- MY POOLS LIVE LISTENER (Instant Updates) ---
+  // Cross-Context Refresh Listeners
+  useEffect(() => {
+    const handleSilentRefresh = () => {
+      triggerVisualRefresh(); 
+    };
+
+    window.addEventListener('refreshGlobalFeed', handleSilentRefresh);
+
+    const handleServiceWorkerMessage = (event: MessageEvent) => {
+      if (event.data && event.data.type === 'BACKGROUND_REFRESH') {
+        triggerVisualRefresh();
+      }
+    };
+
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.addEventListener('message', handleServiceWorkerMessage);
+    }
+    
+    return () => {
+      window.removeEventListener('refreshGlobalFeed', handleSilentRefresh);
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
+      }
+    };
+  }, [currentUser, profile]);
+
   useEffect(() => {
     if (!currentUser?.uid || !auth.currentUser || profile?.role === 'guest') {
       setIsLoading(false);
       return;
     }
 
-    // Load static discover feed once on mount
     loadDiscoverPools();
 
-    // Listen ONLY to pools where the user is a participant or host
     const q = query(
       collection(db, 'group_orders'), 
       where('participant_ids', 'array-contains', currentUser.uid)
@@ -143,19 +162,18 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
 
   const triggerVisualRefresh = () => {
     setIsRefreshing(true);
-    Promise.all([
-      loadDiscoverPools(),
-      fetchPastOrders('', true)
-    ]).finally(() => {
-      setTimeout(() => setIsRefreshing(false), 500);
-    });
+    setTimeout(() => {
+      Promise.all([
+        loadDiscoverPools(),
+        fetchPastOrders('', true)
+      ]).finally(() => {
+        setTimeout(() => setIsRefreshing(false), 500);
+      });
+    }, 500);
   };
 
   if (isAuthLoading) return null;
 
-  // ==========================================
-  // GUEST VIEW BLOCK
-  // ==========================================
   if (profile?.role === 'guest') {
     return (
       <div className="animate-fade-in-up max-w-2xl mx-auto mt-10">
@@ -276,12 +294,39 @@ export default function GroupOrdersTab({ currentUser }: { currentUser: any }) {
   );
 }
 
-// ==========================================
-// 1. THE GROUP ORDER CARD
-// ==========================================
 function GroupOrderCard({ order, currentUser, onJoin, onManage, router, onStatusUpdate }: any) {
   const [timeLeft, setTimeLeft] = useState('');
   
+  const [isDismissed, setIsDismissed] = useState(false);
+
+  useEffect(() => {
+    const checkDismissed = () => {
+      try {
+        const stored = localStorage.getItem('dismissedTrackers');
+        if (stored) {
+          const dismissedArray = JSON.parse(stored);
+          setIsDismissed(dismissedArray.includes(order.id));
+        }
+      } catch(e) {}
+    };
+    checkDismissed();
+    window.addEventListener('trackerStateChanged', checkDismissed);
+    return () => window.removeEventListener('trackerStateChanged', checkDismissed);
+  }, [order.id]);
+
+  const restoreTracker = () => {
+    try {
+      const stored = localStorage.getItem('dismissedTrackers');
+      if (stored) {
+        const dismissedArray = JSON.parse(stored);
+        const newArray = dismissedArray.filter((id: string) => id !== order.id);
+        localStorage.setItem('dismissedTrackers', JSON.stringify(newArray));
+        setIsDismissed(false);
+        window.dispatchEvent(new Event('trackerStateChanged')); 
+      }
+    } catch(e) {}
+  };
+
   const isHost = currentUser?.uid === order.host_id;
   const hasJoined = !isHost && order.participant_ids?.includes(currentUser?.uid);
   
@@ -320,20 +365,36 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router, onStatus
       ? order.estimated_arrival_time 
       : order.expires_at;
 
-    const interval = setInterval(() => {
-      const distance = new Date(targetTime!).getTime() - new Date().getTime();
-      
-      if (distance < 0) { 
-        clearInterval(interval); 
-        setTimeLeft(order.status === 'locked' ? 'Check with Host!' : 'Time is up!'); 
-      } else {
-        const m = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-        const s = Math.floor((distance % (1000 * 60)) / 1000);
-        setTimeLeft(`${m}m ${s}s`);
+    const calculateTime = () => {
+      const distance = new Date(targetTime!).getTime() - Date.now();
+
+      if (order.status === 'locked') {
+        const thirtyMinutes = 30 * 60 * 1000;
+        if (distance < -thirtyMinutes) {
+          setTimeLeft('Status Unknown');
+          return true;
+        }
       }
-    }, 1000);
+
+      if (distance <= 0) {
+        setTimeLeft(order.status === 'locked' ? 'Check with Host!' : 'Time is up!');
+        return true; 
+      } else {
+        const m = Math.ceil(distance / (1000 * 60));
+        setTimeLeft(`${m} min`);
+        return false; 
+      }
+    };
+
+    const shouldStop = calculateTime();
+    if (shouldStop) return;
+
+    const heartbeat = setInterval(() => {
+      const stop = calculateTime();
+      if (stop) clearInterval(heartbeat);
+    }, 60000);
     
-    return () => clearInterval(interval);
+    return () => clearInterval(heartbeat);
   }, [order.expires_at, order.estimated_arrival_time, order.status]);
 
   const updateStatus = async (newStatus: 'locked' | 'delivered') => {
@@ -363,6 +424,9 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router, onStatus
   if (order.status === 'delivered') statusText = 'Arrived!';
   if (order.status === 'cancelled') statusText = 'Cancelled';
   if (order.status === 'settled') statusText = 'Settled';
+
+  const isOverdue = timeLeft === 'Check with Host!';
+  const isGhost = timeLeft === 'Status Unknown';
 
   return (
     <div className={`bg-white p-4 sm:p-5 rounded-2xl border-y border-r border-l-4 shadow-sm hover:shadow-md transition flex flex-col ${leftBorder} border-y-gray-100 border-r-gray-100`}>
@@ -418,8 +482,12 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router, onStatus
           <span className="block text-[9px] font-bold uppercase tracking-wider text-gray-400 mb-0.5">
             {isPast ? 'Status' : (order.status === 'locked' ? 'ETA' : 'Ordering In')}
           </span>
-          <span className={`text-lg sm:text-xl font-black tabular-nums leading-none ${order.status === 'delivered' ? 'text-green-600' : ''} ${timeLeft === 'Check with Host!' ? 'text-orange-500 text-sm animate-pulse' : ''}`}>
-            {timeLeft === 'Check with Host!' ? '📍 Arriving!' : statusText}
+          <span className={`text-lg sm:text-xl font-black tabular-nums leading-none 
+            ${order.status === 'delivered' ? 'text-green-600' : ''} 
+            ${isOverdue ? 'text-orange-500 text-sm animate-pulse' : ''}
+            ${isGhost ? 'text-gray-400 text-sm' : ''}
+          `}>
+            {isOverdue ? '📍 Arriving!' : statusText}
           </span>
           
           {!isHost && hasJoined && !isPast && order.contact_number && (
@@ -470,6 +538,13 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router, onStatus
                     ✏️ Edit Cart
                   </button>
                 )}
+                
+                {order.status === 'locked' && isDismissed && (
+                  <button onClick={restoreTracker} className="flex-[2] py-2 bg-orange-50 text-orange-700 font-bold text-sm rounded-xl border border-orange-100 hover:bg-orange-100 transition flex items-center justify-center gap-1">
+                    📌 Pin Tracker
+                  </button>
+                )}
+
                 <button onClick={onManage} className="flex-[1] flex items-center justify-center p-2 bg-gray-50 text-gray-700 rounded-xl hover:bg-gray-100 transition border border-gray-200" title="View Details">
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63-.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" /></svg>
                 </button>
@@ -488,9 +563,6 @@ function GroupOrderCard({ order, currentUser, onJoin, onManage, router, onStatus
   );
 }
 
-// ==========================================
-// 2. THE MANAGE ORDER MODAL (Host Edit Prices & Instructions)
-// ==========================================
 function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: GroupOrder, currentUser: any, onClose: () => void, onUpdate: () => void }) {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isBlasting, setIsBlasting] = useState(false); 
@@ -791,9 +863,6 @@ function ManageOrderModal({ order, currentUser, onClose, onUpdate }: { order: Gr
   );
 }
 
-// ==========================================
-// 3. THE CREATE MODAL (Host Form with persistent Auto-Fill)
-// ==========================================
 function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClose: () => void, onSuccess: () => void }) {
   const [formData, setFormData] = useState({ 
     app_name: 'Blinkit', 
@@ -915,9 +984,6 @@ function CreateOrderModal({ profile, onClose, onSuccess }: { profile: any, onClo
   );
 }
 
-// ==========================================
-// 4. THE JOIN / EDIT MODAL (Hybrid System & Persistent Auto-Fill)
-// ==========================================
 function JoinOrderModal({ profile, currentUser, order, onClose, router }: { profile: any, currentUser: any, order: GroupOrder, onClose: () => void, router: any }) {
   const existingParticipant = order.participants.find(p => p.user_id === currentUser?.uid);
   const isEditing = !!existingParticipant;

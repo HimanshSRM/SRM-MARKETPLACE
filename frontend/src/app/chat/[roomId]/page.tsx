@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { useAuth } from '@/context/AuthContext';
-import { collection, query, orderBy, onSnapshot, doc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, doc, getDocs, startAfter, limit } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase'; 
 import { getChatMessages, sendMessage, acceptBid, resolveSupportTicket, moderateListing, moderateUser, ChatMessage, deleteChatMessages, revertDeal, saveChatContactInfo, createSupportTicket } from '@/lib/api';
 import { QRCodeSVG } from 'qrcode.react';
@@ -17,10 +17,15 @@ export default function ChatRoomPage() {
   
   const [roomDetails, setRoomDetails] = useState<any>(null);
   const [poolDetails, setPoolDetails] = useState<any>(null); 
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [roomStatus, setRoomStatus] = useState<'open' | 'locked' | 'delivered' | 'active' | 'sold' | 'resolved'>('active');
   const [isLoading, setIsLoading] = useState(true);
   const [isNotFound, setIsNotFound] = useState(false);
+
+  // --- PAGINATION STATES ---
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [oldestMessageDoc, setOldestMessageDoc] = useState<any>(null); 
+  const [hasMoreMessages, setHasMoreMessages] = useState(true); 
+  const [isLoadingMore, setIsLoadingMore] = useState(false); 
 
   const [quickReplies, setQuickReplies] = useState<any[]>([]);
   const [shopPhone, setShopPhone] = useState<string | null>(null);
@@ -64,6 +69,8 @@ export default function ChatRoomPage() {
     setRoomStatus('active');
     setIsLoading(true);
     setIsNotFound(false);
+    setOldestMessageDoc(null);
+    setHasMoreMessages(true);
   }, [roomId]);
 
   useEffect(() => {
@@ -140,7 +147,7 @@ export default function ChatRoomPage() {
     return parts.map((part, i) => {
       if (part.match(urlRegex)) {
         return (
-          <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700 underline break-all font-bold" onClick={(e) => e.stopPropagation()}>
+          <a key={i} href={part} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:text-blue-700 underline font-bold break-all" onClick={(e) => e.stopPropagation()}>
             {part}
           </a>
         );
@@ -165,16 +172,21 @@ export default function ChatRoomPage() {
     }
   };
 
+  // --- INITIAL LIVE LISTENER (Paginated to 25) ---
   useEffect(() => {
     if (isAuthLoading || !profile?.uid || !auth.currentUser) return;
     loadChatSecurely(); 
 
     const messagesRef = collection(db, 'chat_rooms', roomId, 'messages');
-    const q = query(messagesRef, orderBy('timestamp', 'asc'));
+    const q = query(messagesRef, orderBy('timestamp', 'desc'), limit(25));
 
     const unsubscribeMessages = onSnapshot(q, (snapshot) => {
       const liveMessages: ChatMessage[] = []; 
       let hasAcceptedBid = false;
+
+      if (!snapshot.empty) {
+        setOldestMessageDoc(snapshot.docs[snapshot.docs.length - 1]);
+      }
 
       snapshot.forEach((document) => {
         const data = document.data();
@@ -187,6 +199,8 @@ export default function ChatRoomPage() {
           created_at: data.created_at?.toDate ? data.created_at.toDate().toISOString() : data.created_at,
         } as ChatMessage); 
       });
+
+      liveMessages.reverse();
 
       setMessages((prev: ChatMessage[]) => {
         if (prev.length !== liveMessages.length) setTimeout(scrollToBottom, 100);
@@ -218,6 +232,51 @@ export default function ChatRoomPage() {
 
     return () => { unsubscribeMessages(); unsubscribeRoom(); };
   }, [roomId, profile?.uid, isAuthLoading]); 
+
+  // --- HISTORY PAGINATION LOADER ---
+  const loadOlderMessages = async () => {
+    if (isLoadingMore || !hasMoreMessages || !oldestMessageDoc) return;
+    
+    setIsLoadingMore(true);
+    try {
+      const messagesRef = collection(db, 'chat_rooms', roomId, 'messages');
+      const q = query(
+          messagesRef, 
+          orderBy('timestamp', 'desc'), 
+          startAfter(oldestMessageDoc), 
+          limit(25)
+      );
+
+      const snapshot = await getDocs(q);
+
+      if (snapshot.empty) {
+          setHasMoreMessages(false);
+          setIsLoadingMore(false);
+          return;
+      }
+
+      setOldestMessageDoc(snapshot.docs[snapshot.docs.length - 1]);
+
+      const olderMessages: ChatMessage[] = [];
+      snapshot.forEach((document) => {
+        const data = document.data();
+        olderMessages.push({
+          id: document.id,
+          ...data,
+          timestamp: data.timestamp?.toDate ? data.timestamp.toDate().toISOString() : data.timestamp,
+          created_at: data.created_at?.toDate ? data.created_at.toDate().toISOString() : data.created_at,
+        } as ChatMessage); 
+      });
+
+      olderMessages.reverse();
+      setMessages(prev => [...olderMessages, ...prev]);
+
+    } catch (error) {
+      console.error("Failed to load older messages", error);
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
 
   useEffect(() => {
     if (roomDetails?.type === 'group_order' && roomDetails?.pool_id) {
@@ -292,7 +351,6 @@ export default function ChatRoomPage() {
     if (e) e.preventDefault();
     if (!canChat || !profile?.uid) return;
 
-    // 🚨 OFFER FIX: Uses "Offer" vocabulary instead of "Bid"
     const textToSend = overrideText || newMessage || `Offer: ₹${bidAmount}`;
     const isBidToSend = isBidding && !overrideText;
     const bidAmountToSend = isBidToSend ? parseFloat(bidAmount) : undefined;
@@ -649,6 +707,19 @@ export default function ChatRoomPage() {
       {/* 4. CHAT FEED & MODERATION PANELS */}
       <div className="flex-1 overflow-y-auto min-h-0 p-4 space-y-4 bg-gray-50/50">
         
+        {/* 🚨 THE PAGINATION BUTTON */}
+        {hasMoreMessages && messages.length >= 50 && (
+           <div className="flex justify-center my-2">
+              <button 
+                 onClick={loadOlderMessages}
+                 disabled={isLoadingMore}
+                 className="px-4 py-1.5 bg-gray-200 text-gray-700 text-xs font-bold rounded-full hover:bg-gray-300 transition shadow-sm"
+              >
+                 {isLoadingMore ? "Loading..." : "Load Older Messages ⬆️"}
+              </button>
+           </div>
+        )}
+
         {isSupport && (
           <div className="text-center my-4">
             <span className="px-3 py-1 bg-gray-200 text-gray-600 text-[10px] font-black uppercase rounded-full tracking-wider">Secure Support Channel</span>
@@ -774,7 +845,6 @@ export default function ChatRoomPage() {
                     )}
                   </div>
                   
-                  {/* 🚨 OFFER FIX: Updated Offer Box UI */}
                   {!isSupport && !isGroupOrder && msg.is_bid && msg.bid_amount && (
                     <div className={`mt-3 p-4 rounded-2xl border ${isMe ? 'bg-blue-700/50 border-blue-400' : 'bg-green-50 border-green-200'}`}>
                       <div className="flex items-center justify-between gap-6">
@@ -846,7 +916,6 @@ export default function ChatRoomPage() {
               )}
             </div>
             
-            {/* 🚨 CONTACT HUB FIX: Unified phone + upi inputs for the seller */}
             {!amIBuyer ? (
               <>
                 {(!roomDetails?.seller_upi || !roomDetails?.seller_phone || isEditingContact) ? (
@@ -964,7 +1033,6 @@ export default function ChatRoomPage() {
              
              <div className="flex items-center justify-between px-1 mb-2 mt-0">
                
-               {/* 🚨 THE COUNTER-OFFER FIX: The offer UI checkbox is completely hidden from the seller */}
                {amIBuyer && !isSupport && !isGroupOrder && roomStatus !== 'sold' && ( 
                  <label className="flex items-center gap-2 cursor-pointer group">
                    <div className="relative flex items-center justify-center">

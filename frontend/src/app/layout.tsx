@@ -1,12 +1,15 @@
+// app/layout.tsx
 import type { Metadata, Viewport } from 'next';
 import { Inter } from 'next/font/google';
 // @ts-ignore: allow side-effect CSS import in Next.js app directory
 import './globals.css';
 import { AuthProvider } from '@/context/AuthContext';
 import { NotificationProvider } from '@/context/NotificationContext';
+// 🚨 Import the new Inbox Provider
+import { InboxProvider } from '@/context/InboxContext'; 
 import Navbar from '@/components/Navbar'; 
 import NotificationPrompt from '@/components/NotificationPrompt'; 
-import ActivePoolTracker from '@/components/ActivePoolTracker'; // 🚨 THE NEW GLOBAL TRACKER
+import ActivePoolTracker from '@/components/ActivePoolTracker'; 
 import { Toaster } from 'react-hot-toast'; 
 
 const inter = Inter({ subsets: ['latin'] });
@@ -47,18 +50,20 @@ export default function RootLayout({
       <body className={inter.className}>
         <AuthProvider>
           <NotificationProvider> 
-            <Toaster position="top-center" />
-            <Navbar /> 
-            
-            <main>
-              {children}
-            </main>
-            
-            <NotificationPrompt />
-            
-            {/* 🚨 MOUNTED GLOBALLY: Will only appear if the user has a locked order */}
-            <ActivePoolTracker /> 
-            
+            {/* 🚨 Wrap the app in the InboxProvider */}
+            <InboxProvider>
+              <Toaster position="top-center" />
+              <Navbar /> 
+              
+              <main>
+                {children}
+              </main>
+              
+              <NotificationPrompt />
+              
+              <ActivePoolTracker /> 
+              
+            </InboxProvider>
           </NotificationProvider>
         </AuthProvider>
       </body>

@@ -1,6 +1,7 @@
+// lib/firebase.ts
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth'; // 🚨 1. Added GithubAuthProvider here
-import { getFirestore } from 'firebase/firestore';
+import { getAuth, GoogleAuthProvider, GithubAuthProvider } from 'firebase/auth'; 
+import { initializeFirestore, persistentLocalCache, persistentMultipleTabManager } from 'firebase/firestore';
 import { getMessaging, isSupported } from 'firebase/messaging';
 
 // Your web app's Firebase configuration using Next.js public variables
@@ -17,10 +18,16 @@ const firebaseConfig = {
 const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
-const githubProvider = new GithubAuthProvider(); // 🚨 2. Initialized GitHub Provider
+const githubProvider = new GithubAuthProvider(); 
 
-export { app, auth, googleProvider, githubProvider }; // 🚨 3. Exported it
-export const db = getFirestore(app);
+export { app, auth, googleProvider, githubProvider }; 
+
+// Initialize Firestore with Local Persistence enabled to drastically reduce read costs
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({
+    tabManager: persistentMultipleTabManager()
+  })
+});
 
 export const messaging = async () => {
   if (typeof window !== 'undefined') {

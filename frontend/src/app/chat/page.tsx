@@ -3,12 +3,11 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-// 🚨 NEW IMPORTS ADDED (We will build getPastPools and getMyTickets in api.ts at the end!)
 import { hideChatRoom, getPastPools, getMyTickets } from '@/lib/api';
 import Link from 'next/link';
 
-// 🚨 IMPORT THE NEW REAL-TIME ENGINE
-import { useRealtimeInbox } from '@/lib/useRealtimeInbox'; 
+// 🚨 IMPORT THE NEW GLOBAL ENGINE
+import { useGlobalInbox } from '@/context/InboxContest'; 
 
 type InboxTab = 'buying' | 'selling' | 'support' | 'pools'; 
 
@@ -16,8 +15,8 @@ export default function InboxPage() {
   const { profile, isLoading: isAuthLoading } = useAuth();
   const router = useRouter();
   
-  // 🚨 The Magic One-Liner (No extra variables needed!)
-  const { buying, selling, support, pools, isLoading } = useRealtimeInbox();
+  // 🚨 Grab the instantly-available data from the global context
+  const { buying, selling, support, pools, isLoading } = useGlobalInbox();
   
   const inboxData = { buying, selling, support, pools };
   
@@ -31,7 +30,7 @@ export default function InboxPage() {
     return 'buying';
   });
 
-  // --- 🚨 NEW: PAST HISTORY PAGINATION STATES ---
+  // --- PAST HISTORY PAGINATION STATES ---
   const [pastPools, setPastPools] = useState<any[]>([]);
   const [poolsCursor, setPoolsCursor] = useState<string | null>(null);
   const [isLoadingPastPools, setIsLoadingPastPools] = useState(false);
@@ -84,7 +83,7 @@ export default function InboxPage() {
     }
   };
 
-  // --- 🚨 NEW: HISTORY FETCHER ---
+  // --- HISTORY FETCHER ---
   const fetchHistory = async () => {
     if (activeTab === 'pools') {
       setIsLoadingPastPools(true);
@@ -113,7 +112,7 @@ export default function InboxPage() {
     }
   };
 
-  // --- 🚨 THE FIX: SMART ARRAY MERGER ---
+  // --- SMART ARRAY MERGER ---
   // Merges active real-time chats with fetched historical data gracefully
   const currentRooms = inboxData[activeTab] || [];
   let combinedRooms = Array.from(new Map(currentRooms.map(room => [room.id || room.room_id, room])).values());
@@ -172,7 +171,6 @@ export default function InboxPage() {
         </div>
 
         <div>
-          {/* 🚨 THE FIX: Swapped uniqueRooms for combinedRooms */}
           {combinedRooms.length === 0 ? (
             <div className="bg-white p-12 sm:p-16 text-center rounded-3xl shadow-sm border border-gray-200">
               <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mx-auto mb-6">
@@ -213,7 +211,6 @@ export default function InboxPage() {
             </div>
           ) : (
             <div className="space-y-4">
-              {/* 🚨 THE FIX: Map over the new combined array safely */}
               {combinedRooms.map((room) => {
                 const roomId = room.chat_room_id || room.room_id || room.id; 
                 const isSold = room.status === 'sold' || room.status === 'settled';
@@ -294,7 +291,6 @@ export default function InboxPage() {
                     <div className="absolute right-4 sm:right-6 flex flex-col sm:flex-row items-end sm:items-center gap-2 sm:gap-3">
                       {(room.updated_at || room.created_at) && <span className="text-[10px] sm:text-xs text-gray-400 font-bold sm:font-medium text-right">{formatTime(room.updated_at || room.created_at)}</span>}
                       
-                      {/* Active chats can be hidden, historical fetched chats don't need this button */}
                       {room.id && (
                         <button onClick={(e) => handleHideChat(e, roomId)} className="p-1.5 sm:p-2 text-gray-300 hover:text-red-600 hover:bg-red-50 rounded-xl transition-all z-10" title="Remove from Inbox">
                           <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
@@ -305,7 +301,7 @@ export default function InboxPage() {
                 )
               })}
 
-              {/* 🚨 NEW: Safe Paginator Buttons appended to the bottom of the active list */}
+              {/* Safe Paginator Buttons appended to the bottom of the active list */}
               {activeTab === 'pools' && hasMorePastPools && combinedRooms.length > 0 && (
                 <div className="flex justify-center pt-6 pb-4">
                   <button onClick={fetchHistory} disabled={isLoadingPastPools} className="px-6 py-2.5 bg-gray-200 text-gray-700 text-xs font-bold rounded-xl hover:bg-gray-300 transition">

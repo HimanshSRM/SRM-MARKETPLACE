@@ -130,7 +130,7 @@ async def update_shop_profile(shop_id: str, payload: ShopProfileUpdate, user: di
             
         # 🚨 THE MODERATION LOOP: Alert Admin if editing a rejected or suspended shop profile
         if current_status in ["rejected", "suspended"]:
-            # 🚨 THE INDEX FIX: Query by buyer_id only, filter the rest in Python to prevent crash
+            # Query by buyer_id only, filter the rest in Python to prevent crash
             tickets = db.collection("chat_rooms").where("buyer_id", "==", uid).stream()
                 
             latest_ticket = None
@@ -199,6 +199,7 @@ async def add_catalog_item(item: CatalogItemCreate, user: dict = Depends(get_act
     except Exception as e: 
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.delete("/catalog/{item_id}", tags=["Shops - Private"])
 async def delete_catalog_item(item_id: str, user: dict = Depends(get_active_user)):
     try:
@@ -225,9 +226,7 @@ async def update_catalog_item(
 ):
     """Updates a catalog item and alerts Admins if it was restricted."""
     try:
-        # 🚨 ROLE FIX: Removed the strict "shop_verified" block here.
         # Suspended shops get downgraded to "guest", but they MUST be allowed to edit their own catalog.
-        
         payload = await request.json()
         uid = user.get("uid")
         
@@ -258,7 +257,7 @@ async def update_catalog_item(
             
         # 🚨 THE MODERATION LOOP: Alert Admin if editing a restricted catalog item
         if current_status in ["suspended", "hidden"]:
-            # 🚨 THE INDEX FIX: Query by listing_id only, filter the rest in Python to prevent crash
+            # Query by listing_id only, filter the rest in Python to prevent crash
             tickets = db.collection("chat_rooms").where("listing_id", "==", item_id).stream()
 
             for t in tickets:
@@ -301,6 +300,7 @@ async def update_shop_status(payload: ShopStatusUpdate, user: dict = Depends(get
         return {"message": f"Shop is now {'Open' if payload.is_open else 'Closed'}"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.put("/notice", tags=["Shops - Private"])
 async def update_live_notice(payload: ShopNoticeUpdate, user: dict = Depends(get_active_user)):
     try:
@@ -308,6 +308,7 @@ async def update_live_notice(payload: ShopNoticeUpdate, user: dict = Depends(get
         db.collection("shops").document(user.get("uid")).update({"live_notice": payload.model_dump()})
         return {"message": "Live notice updated!"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.put("/quick-replies", tags=["Shops - Private"])
 async def update_quick_replies(payload: QuickReplyUpdate, user: dict = Depends(get_active_user)):
@@ -317,6 +318,7 @@ async def update_quick_replies(payload: QuickReplyUpdate, user: dict = Depends(g
         return {"message": "Quick replies updated!"}
     except Exception as e: raise HTTPException(status_code=500, detail=str(e))
 
+
 @router.post("/flash-deal", tags=["Shops - Private"])
 async def trigger_flash_deal(deal: FlashDealCreate, request: Request, user: dict = Depends(get_active_user)):
     try:
@@ -325,7 +327,12 @@ async def trigger_flash_deal(deal: FlashDealCreate, request: Request, user: dict
 
         uid = user.get("uid")
         shop_ref = db.collection("shops").document(uid)
-        shop_name = shop_ref.get().to_dict().get("shop_name", "A Shop")
+        shop_doc = shop_ref.get()
+        
+        if not shop_doc.exists:
+            raise HTTPException(status_code=404, detail="Shop not found.")
+            
+        shop_name = shop_doc.to_dict().get("shop_name", "A Campus Shop")
 
         expires_at = datetime.now(timezone.utc) + timedelta(hours=deal.duration_hours)
         
@@ -339,14 +346,23 @@ async def trigger_flash_deal(deal: FlashDealCreate, request: Request, user: dict
             "updated_at": firestore.SERVER_TIMESTAMP
         })
 
-        await request.app.state.redis.enqueue_job(
-            'send_topic_push_notification',
-            "flash_deals", 
-            f"⚡ FLASH DEAL: {shop_name}",
-            f"{deal.item_name} is only ₹{deal.deal_price} (Was ₹{deal.original_price})!",
-            "/shops" 
-        )
+        # 🚨 THE REDIS FIX: Hands off the heavy lifting to the Python worker
+        if hasattr(request.app.state, "redis"):
+            try:
+                await request.app.state.redis.enqueue_job(
+                    'broadcast_flash_deal',
+                    shop_name,
+                    deal.item_name,
+                    str(deal.deal_price),
+                    str(deal.original_price)
+                )
+            except Exception as e:
+                # Log to server console silently without breaking the user flow
+                print(f"⚠️ Redis Flash Deal Broadcast failed. Error: {e}")
+
         return {"message": "Flash Deal Broadcasted & Live on Directory!"}
+    except HTTPException:
+        raise
     except Exception as e: 
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -370,7 +386,7 @@ async def report_shop_item(shop_id: str, item_id: str, payload: ReportCreate, us
         reported_by = item_data.get("reported_by", [])
         
         if uid in reported_by:
-            # 🚨 THE INDEX FIX: Avoid crash on reporting
+            # Query by listing_id only to avoid complex index requirements
             tickets_stream = db.collection("chat_rooms").where("listing_id", "==", item_id).stream()
             existing_ticket = next((t for t in tickets_stream if t.to_dict().get("buyer_id") == uid and t.to_dict().get("is_ticket") == True), None)
                 
@@ -474,5 +490,7 @@ async def get_single_shop(shop_id: str, user: dict = Depends(get_marketplace_use
         shop_data["catalog"] = filtered_catalog
         
         return {"data": shop_data}
-    except HTTPException: raise
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except HTTPException: 
+        raise
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=str(e))
